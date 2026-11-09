@@ -1,0 +1,265 @@
+mod auth;
+mod reminders;
+mod rewards;
+mod store;
+mod tray;
+mod updater;
+
+use std::sync::Mutex;
+
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, Runtime, State, WindowEvent};
+use tauri_plugin_autostart::ManagerExt as _;
+use tauri_plugin_notification::NotificationExt as _;
+use tauri_plugin_opener::OpenerExt as _;
+
+use rewards::{FetchError, RewardsSummary};
+use store::{Settings, Store, XboxProgress};
+use updater::UpdateInfo;
+
+/// Argument passé par le démarrage automatique de Windows : l'app démarre dans le tray.
+const MINIMIZED_ARG: &str = "--minimized";
+/// Identifiant de l'app Xbox pour PC, utilisé pour l'ouvrir sur le Rewards Hub.
+const XBOX_APP_AUMID: &str = "Microsoft.GamingApp_8wekyb3d8bbwe!Microsoft.Xbox.App";
+/// Domaines que l'interface peut ouvrir dans le navigateur.
+const OPENABLE_HOSTS: &[&str] = &[
+    "bing.com",
+    "microsoft.com",
+    "xbox.com",
+    "live.com",
+    "msn.com",
+    "github.com",
+];
+
+pub struct AppState {
+    pub store: Store,
+    pub http: reqwest::Client,
+    pub summary: Mutex<Option<RewardsSummary>>,
+    pub notified_update: Mutex<Option<String>>,
+}
+
+pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+pub fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
+    if let Err(err) = app.notification().builder().title(title).body(body).show() {
+        log::warn!("Notification impossible : {err}");
+    }
+}
+
+/// Relit le tableau de bord Rewards, met à jour le cache, le tray et l'interface.
+pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<RewardsSummary, FetchError> {
+    let client = app.state::<AppState>().http.clone();
+    let result = rewards::fetch(app, &client).await;
+    let state = app.state::<AppState>();
+    match &result {
+        Ok(summary) => {
+            *state.summary.lock().unwrap() = Some(summary.clone());
+            tray::set_points(app, Some(summary.available_points));
+            let _ = app.emit("rewards-updated", summary);
+        }
+        Err(FetchError::NotLoggedIn) => {
+            *state.summary.lock().unwrap() = None;
+            tray::set_points(app, None);
+            let _ = app.emit("rewards-logged-out", ());
+        }
+        Err(err) => log::warn!("Lecture Rewards impossible : {err}"),
+    }
+    result
+}
+
+#[tauri::command]
+async fn refresh_rewards(app: AppHandle) -> Result<RewardsSummary, String> {
+    refresh(&app).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn cached_rewards(state: State<AppState>) -> Option<RewardsSummary> {
+    state.summary.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn login(app: AppHandle) -> Result<(), String> {
+    auth::open_login(&app).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn logout(app: AppHandle) -> Result<(), String> {
+    auth::logout(&app).await?;
+    *app.state::<AppState>().summary.lock().unwrap() = None;
+    tray::set_points(&app, None);
+    let _ = app.emit("rewards-logged-out", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn get_settings(state: State<AppState>) -> Settings {
+    state.store.settings()
+}
+
+#[tauri::command]
+fn save_settings(state: State<AppState>, settings: Settings) {
+    state.store.set_settings(settings);
+}
+
+#[tauri::command]
+fn xbox_progress(state: State<AppState>) -> XboxProgress {
+    state.store.xbox_progress()
+}
+
+#[tauri::command]
+fn set_xbox_today(state: State<AppState>, game: Option<String>) -> XboxProgress {
+    state.store.set_xbox_today(game);
+    state.store.xbox_progress()
+}
+
+#[tauri::command]
+async fn send_test_reminder(app: AppHandle) -> Vec<String> {
+    let settings = app.state::<AppState>().store.settings();
+    reminders::send(&app, &settings).await
+}
+
+#[tauri::command]
+fn autostart_enabled(app: AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_autostart(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let launcher = app.autolaunch();
+    let result = if enabled {
+        launcher.enable()
+    } else {
+        launcher.disable()
+    };
+    result.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
+    updater::check(&app).await
+}
+
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    updater::install(&app).await
+}
+
+#[tauri::command]
+fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(&url).map_err(|e| e.to_string())?;
+    let host = parsed.host_str().unwrap_or_default();
+    let allowed = parsed.scheme() == "https"
+        && OPENABLE_HOSTS
+            .iter()
+            .any(|h| host == *h || host.ends_with(&format!(".{h}")));
+    if !allowed {
+        return Err(format!("Adresse non autorisée : {url}"));
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_xbox_app() -> Result<(), String> {
+    std::process::Command::new("explorer.exe")
+        .arg(format!("shell:AppsFolder\\{XBOX_APP_AUMID}"))
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Impossible d'ouvrir l'app Xbox : {e}"))
+}
+
+#[tauri::command]
+fn open_logs(app: AppHandle) -> Result<(), String> {
+    let dir = app.path().app_log_dir().map_err(|e| e.to_string())?;
+    let _ = std::fs::create_dir_all(&dir);
+    app.opener()
+        .open_path(dir.to_string_lossy(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppInfo {
+    version: String,
+}
+
+#[tauri::command]
+fn app_info(app: AppHandle) -> AppInfo {
+    AppInfo {
+        version: app.package_info().version.to_string(),
+    }
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        // Un second lancement réaffiche la fenêtre existante au lieu d'ouvrir une autre instance.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(app)
+        }))
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
+                .build(),
+        )
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec![MINIMIZED_ARG]),
+        ))
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .setup(|app| {
+            let state_file = app.path().app_data_dir()?.join("state.json");
+            app.manage(AppState {
+                store: Store::load(state_file),
+                http: rewards::http_client(),
+                summary: Mutex::new(None),
+                notified_update: Mutex::new(None),
+            });
+            tray::create(app.handle())?;
+            if !std::env::args().any(|arg| arg == MINIMIZED_ARG) {
+                show_main(app.handle());
+            }
+            reminders::spawn(app.handle().clone());
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Fermer la fenêtre principale la cache : l'app continue dans le tray.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            refresh_rewards,
+            cached_rewards,
+            login,
+            logout,
+            get_settings,
+            save_settings,
+            xbox_progress,
+            set_xbox_today,
+            send_test_reminder,
+            autostart_enabled,
+            set_autostart,
+            check_update,
+            install_update,
+            open_url,
+            open_xbox_app,
+            open_logs,
+            app_info,
+        ])
+        .run(tauri::generate_context!())
+        .expect("erreur au lancement de Rewards Autoplay");
+}

@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rewards Autoplay</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <nav class="side" aria-label="Navigation">
+      <div class="brand"><img src="icon.png" alt="" width="28" height="28"><span>Rewards Autoplay</span></div>
+      <button class="nav-item" data-view="today" aria-current="page">Aujourd'hui</button>
+      <button class="nav-item" data-view="settings">Paramètres</button>
+      <div class="side-foot">
+        <div id="account-line" class="muted">Non connecté</div>
+        <div id="version-line" class="muted small"></div>
+      </div>
+    </nav>
+
+    <main>
+      <div id="update-banner" class="banner info" hidden>
+        <span id="update-banner-text"></span>
+        <button class="btn primary" id="update-banner-install">Installer et redémarrer</button>
+      </div>
+
+      <!-- Non connecté -->
+      <section id="view-login" class="view" hidden>
+        <div class="login-card">
+          <h1>Connectez votre compte Microsoft</h1>
+          <p>La connexion se fait sur la page officielle de Microsoft Rewards, dans une fenêtre séparée. L'application ne voit jamais votre mot de passe : elle garde seulement la session ouverte pour lire vos points et vos activités.</p>
+          <p class="muted">Utilisez le même compte que celui de l'app Xbox sur ce PC.</p>
+          <button class="btn primary big" id="login-btn">Se connecter à Microsoft</button>
+          <p id="login-hint" class="muted small" hidden>Terminez la connexion dans la fenêtre Microsoft. Elle se fermera toute seule une fois connecté.</p>
+        </div>
+      </section>
+
+      <!-- Aujourd'hui -->
+      <section id="view-today" class="view" hidden>
+        <header class="head">
+          <div>
+            <p class="eyebrow" id="today-date"></p>
+            <div class="points"><span id="points">—</span><span class="unit">points</span></div>
+            <div class="level" id="level"></div>
+          </div>
+          <div class="head-actions">
+            <span class="muted small" id="fetched-at"></span>
+            <button class="btn" id="refresh-btn">Actualiser</button>
+          </div>
+        </header>
+        <div id="fetch-error" class="banner danger" hidden></div>
+
+        <div class="grid">
+          <article class="panel">
+            <h2>Recherches Bing</h2>
+            <div id="searches" class="stack"></div>
+          </article>
+
+          <article class="panel">
+            <h2>Activités du jour</h2>
+            <ul id="daily-set" class="list"></ul>
+          </article>
+
+          <article class="panel wide" id="xbox-panel">
+            <div class="panel-head">
+              <h2>Quêtes Xbox</h2>
+              <button class="btn" id="open-xbox">Ouvrir l'app Xbox</button>
+            </div>
+            <div class="xbox">
+              <div class="xbox-today">
+                <div id="xbox-today-state"></div>
+                <form id="xbox-form" class="inline">
+                  <label for="xbox-game" class="sr-only">Jeu joué</label>
+                  <input id="xbox-game" list="known-games" placeholder="Jeu joué (facultatif)" autocomplete="off">
+                  <datalist id="known-games"></datalist>
+                  <button class="btn primary" type="submit">J'ai joué 15 min aujourd'hui</button>
+                </form>
+                <button class="btn ghost" id="xbox-undo" hidden>Annuler pour aujourd'hui</button>
+              </div>
+              <div class="xbox-goals">
+                <div class="goal">
+                  <span class="label">Bonus hebdo PC</span>
+                  <b id="week-count">0 / 5 jours</b>
+                  <div class="dots" id="week-dots"></div>
+                </div>
+                <div class="goal" id="month-goal">
+                  <span class="label">Packs mensuels</span>
+                  <b id="month-count">0 jeu différent</b>
+                  <div class="dots" id="month-dots"></div>
+                  <span class="muted small" id="month-games"></span>
+                </div>
+              </div>
+            </div>
+            <p class="muted small">Microsoft ne publie pas l'avancement des quêtes Xbox : ce suivi repose sur ce que vous cochez ici. Les points se réclament dans le Rewards Hub de l'app Xbox.</p>
+          </article>
+
+          <article class="panel wide" id="punch-panel" hidden>
+            <h2>Cartes à poinçonner</h2>
+            <ul id="punch-cards" class="list"></ul>
+          </article>
+
+          <article class="panel wide">
+            <h2>Autres activités</h2>
+            <ul id="more" class="list"></ul>
+            <p class="muted small" id="more-done"></p>
+          </article>
+        </div>
+      </section>
+
+      <!-- Paramètres -->
+      <section id="view-settings" class="view" hidden>
+        <h1>Paramètres</h1>
+
+        <article class="panel">
+          <h2>Mode de fonctionnement</h2>
+          <div class="choices">
+            <label class="choice">
+              <input type="radio" name="mode" value="reminders" id="mode-reminders">
+              <span><b>Rappels</b><br><span class="muted">L'application ne lance rien. Elle vous envoie chaque jour une notification avec ce qu'il reste à faire.</span></span>
+            </label>
+            <label class="choice disabled">
+              <input type="radio" name="mode" value="automatic" id="mode-automatic" disabled>
+              <span><b>Automatique</b> <span class="tag">Bientôt</span><br><span class="muted">Lancement des jeux Game Pass installés à tour de rôle. Le règlement Microsoft Rewards interdit les outils automatisés : votre compte pourrait être suspendu.</span></span>
+            </label>
+          </div>
+        </article>
+
+        <article class="panel">
+          <h2>Rappel quotidien</h2>
+          <div class="form">
+            <label for="reminder-time">Heure du rappel</label>
+            <input type="time" id="reminder-time">
+            <span></span>
+            <label class="check"><input type="checkbox" id="remind-bing"> Points Bing restants (recherches, activités du jour)</label>
+            <span></span>
+            <label class="check"><input type="checkbox" id="remind-xbox"> Jeu Xbox du jour pas encore fait</label>
+            <span></span>
+            <div><button class="btn" id="test-reminder">Envoyer le rappel maintenant</button> <span class="muted small" id="test-reminder-result"></span></div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <h2>Abonnement Game Pass</h2>
+          <div class="form">
+            <label for="subscription">Votre formule</label>
+            <select id="subscription">
+              <option value="none">Aucune</option>
+              <option value="essential">Essential (×1)</option>
+              <option value="premium">Premium (×2, packs mensuels)</option>
+              <option value="ultimate">Ultimate (×4, packs mensuels)</option>
+              <option value="pcGamePass">PC Game Pass</option>
+            </select>
+          </div>
+          <p class="muted small">Sert à afficher les quêtes auxquelles votre formule donne accès.</p>
+        </article>
+
+        <article class="panel">
+          <h2>Démarrage</h2>
+          <label class="check"><input type="checkbox" id="autostart"> Lancer avec Windows, directement dans la zone de notification</label>
+          <p class="muted small">Fermer la fenêtre ne quitte pas l'application : elle reste dans la zone de notification. Pour la quitter, faites un clic droit sur son icône puis « Quitter ».</p>
+        </article>
+
+        <article class="panel">
+          <h2>Mises à jour</h2>
+          <div class="form">
+            <label>Version installée</label>
+            <b id="current-version">—</b>
+            <span></span>
+            <div><button class="btn" id="check-update">Rechercher une mise à jour</button> <span class="muted small" id="update-status"></span></div>
+            <span></span>
+            <label class="check"><input type="checkbox" id="auto-update"> Rechercher automatiquement (au démarrage puis toutes les 6 heures)</label>
+          </div>
+          <div id="update-box" class="update-box" hidden>
+            <b id="update-title"></b>
+            <p id="update-notes" class="muted small"></p>
+            <div class="bar" id="update-bar" hidden><i></i></div>
+            <button class="btn primary" id="install-update">Installer et redémarrer</button>
+          </div>
+        </article>
+
+        <article class="panel">
+          <h2>Compte et diagnostic</h2>
+          <div class="btnrow">
+            <button class="btn" id="logout-btn">Se déconnecter</button>
+            <button class="btn" id="open-logs">Ouvrir le dossier des journaux</button>
+          </div>
+          <p class="muted small">Le dossier des journaux contient aussi la dernière réponse brute de Microsoft Rewards, utile si l'affichage des points ne fonctionne plus.</p>
+        </article>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+# Rewards Autoplay
+
+Application Windows (Rust + Tauri 2) qui suit vos points Microsoft Rewards et vous rappelle chaque jour ce qu'il reste à faire, y compris les quêtes Xbox Game Pass. Elle tourne en arrière-plan dans la zone de notification et se met à jour toute seule.
+
+## Fonctionnalités (v0.1)
+
+- Connexion au compte Microsoft sur la page officielle de Microsoft Rewards, dans une fenêtre dédiée. L'application ne voit jamais le mot de passe.
+- Tableau de bord : solde de points, niveau, recherches Bing du jour, activités du jour, cartes à poinçonner et autres activités.
+- Suivi des quêtes Xbox : jeu quotidien coché à la main, bonus hebdomadaire (5 jours), jeux différents du mois pour les packs 4 et 8 jeux.
+- Mode **Rappels** : une notification par jour à l'heure choisie, avec ce qu'il reste à faire.
+- Zone de notification : fermer la fenêtre ne quitte pas l'application. Démarrage avec Windows en option.
+- Mise à jour depuis l'application (Paramètres › Mises à jour, ou menu de l'icône).
+
+Le mode **Automatique** (lancement des jeux installés) n'est pas encore disponible. Le règlement Microsoft Rewards interdit les outils automatisés pour gagner des points : un compte qui l'utilise risque une suspension.
+
+## Limites connues
+
+- Les points et activités viennent de l'API interne de rewards.bing.com (`/api/getuserinfo`), non documentée. Si Microsoft la change, l'affichage cassera : la dernière réponse brute est enregistrée dans le dossier des journaux (Paramètres › Ouvrir le dossier des journaux) pour diagnostiquer.
+- L'avancement des quêtes Xbox n'est pas publié par Microsoft : le suivi Xbox est déclaratif, et les points se réclament dans le Rewards Hub de l'app Xbox.
+
+## Développement
+
+Prérequis : Rust (toolchain MSVC), Visual Studio Build Tools, WebView2 (inclus dans Windows 11), `cargo install tauri-cli --version "^2"`.
+
+```powershell
+cargo tauri dev        # lance l'application
+cargo test --workspace # tests
+cargo tauri build      # installateur NSIS dans target/release/bundle/nsis
+```
+
+Depuis WSL, utiliser la toolchain Windows (`cargo.exe`) avec un dossier de compilation côté Windows : écrire `target/` sur le disque WSL échoue (« Accès refusé »).
+
+```bash
+export CARGO_TARGET_DIR='C:\Users\powange\.cache\rewards-autoplay-target' WSLENV=CARGO_TARGET_DIR
+cargo.exe tauri build
+```
+
+Structure :
+
+| Chemin | Rôle |
+|---|---|
+| `src-tauri/src/lib.rs` | Démarrage, plugins, commandes appelées par l'interface |
+| `src-tauri/src/rewards.rs` | Lecture et analyse du tableau de bord Rewards |
+| `src-tauri/src/auth.rs` | Fenêtre de connexion Microsoft, déconnexion |
+| `src-tauri/src/store.rs` | Réglages et historique Xbox (`state.json`) |
+| `src-tauri/src/reminders.rs` | Rappel quotidien et vérification des mises à jour |
+| `src-tauri/src/tray.rs` | Icône et menu de la zone de notification |
+| `src-tauri/src/updater.rs` | Recherche et installation des mises à jour |
+| `ui/` | Interface (HTML, CSS, JavaScript sans bundler) |
+
+## Publier une version
+
+Les mises à jour sont lues sur `https://github.com/powange/microsoft-rewards/releases/latest/download/latest.json`. Le dépôt doit être **public** pour que l'application puisse télécharger les releases.
+
+1. Une seule fois : ajouter le secret GitHub `TAURI_SIGNING_PRIVATE_KEY` avec le contenu de `C:\Users\powange\.tauri\rewards-autoplay.key` (clé sans mot de passe ; sinon ajouter aussi `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`). La clé publique correspondante est dans `src-tauri/tauri.conf.json`. Ne jamais committer la clé privée : si elle est perdue, les versions installées ne pourront plus se mettre à jour.
+2. Mettre le même numéro de version dans `src-tauri/Cargo.toml` et `src-tauri/tauri.conf.json`.
+3. Créer et pousser le tag : `git tag v0.1.1 && git push origin v0.1.1`.
+
+Le workflow `.github/workflows/build-release.yml` vérifie le code, construit l'installateur signé pour l'updater, génère `latest.json` et publie la release.
