@@ -65,12 +65,24 @@ pub struct XboxSession {
     pub game: String,
 }
 
+/// Quête que l'utilisateur suit. Titre et lien sont gardés pour pouvoir l'afficher même
+/// quand Microsoft ne la propose plus (terminée ou expirée).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FollowedQuest {
+    pub id: String,
+    pub title: String,
+    pub url: Option<String>,
+    pub followed_on: NaiveDate,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct Persisted {
     settings: Settings,
     xbox_sessions: BTreeMap<NaiveDate, XboxSession>,
     last_reminder: Option<NaiveDate>,
+    followed_quests: Vec<FollowedQuest>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -138,6 +150,37 @@ impl Store {
         self.save(&data);
     }
 
+    #[cfg(test)]
+    fn reload(&self) -> Self {
+        Self::load(self.path.clone())
+    }
+
+    pub fn followed_quests(&self) -> Vec<FollowedQuest> {
+        self.data.lock().unwrap().followed_quests.clone()
+    }
+
+    /// Ajoute (`follow`) ou retire une quête des quêtes suivies, et renvoie la liste à jour.
+    pub fn set_followed(
+        &self,
+        id: &str,
+        title: &str,
+        url: Option<String>,
+        follow: bool,
+    ) -> Vec<FollowedQuest> {
+        let mut data = self.data.lock().unwrap();
+        data.followed_quests.retain(|q| q.id != id);
+        if follow {
+            data.followed_quests.push(FollowedQuest {
+                id: id.to_string(),
+                title: title.to_string(),
+                url,
+                followed_on: Local::now().date_naive(),
+            });
+        }
+        self.save(&data);
+        data.followed_quests.clone()
+    }
+
     /// Marque (ou démarque avec `None`) la session Xbox du jour.
     pub fn set_xbox_today(&self, game: Option<String>) {
         let today = Local::now().date_naive();
@@ -196,5 +239,37 @@ impl Store {
             month_games,
             known_games,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn follows_and_unfollows_quests_persistently() {
+        let path =
+            std::env::temp_dir().join(format!("rewards-autoplay-test-{}.json", std::process::id()));
+        let store = Store::load(path.clone());
+        let url = Some("https://rewards.bing.com/earn/quest/sot".to_string());
+        store.set_followed("sot", "Sea of Thieves", url.clone(), true);
+        store.set_followed("duo", "Duolingo", None, true);
+        // Suivre à nouveau ne crée pas de doublon.
+        let followed = store.set_followed("sot", "Sea of Thieves", url, true);
+        assert_eq!(followed.len(), 2);
+
+        let reloaded = store.reload();
+        let ids: Vec<_> = reloaded
+            .followed_quests()
+            .into_iter()
+            .map(|q| q.id)
+            .collect();
+        assert_eq!(ids, ["duo", "sot"]);
+
+        assert_eq!(
+            reloaded.set_followed("duo", "Duolingo", None, false).len(),
+            1
+        );
+        let _ = std::fs::remove_file(path);
     }
 }

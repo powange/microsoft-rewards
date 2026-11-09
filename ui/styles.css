@@ -131,9 +131,14 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .chip { font: 500 12.5px var(--font); padding: 5px 11px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
 .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .btn.small { padding: 4px 10px; font-size: 12.5px; }
+.quest-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.star { background: none; border: 0; padding: 0 2px; font-size: 18px; line-height: 1; color: var(--muted); cursor: pointer; }
+.star:hover, .star.on { color: var(--accent); }
+.nav-item .count { display: inline-block; min-width: 20px; padding: 0 6px; margin-left: 4px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font-size: 11.5px; font-weight: 600; text-align: center; }
 .quest-details { margin-top: 6px; }
 .quest-details summary { cursor: pointer; color: var(--accent); font-size: 12.5px; width: fit-content; }
 .quest-body { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 14px; margin-top: 10px; align-items: start; }
+.quest-body.no-image { grid-template-columns: 1fr; }
 .quest-body img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--line); }
 .quest-text { display: grid; gap: 10px; justify-items: start; }
 @media (max-width: 1000px) { .quest-body { grid-template-columns: 1fr; } .quest-body img { max-width: 320px; } }

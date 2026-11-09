@@ -31,7 +31,7 @@ function toast(message) {
   toastTimer = setTimeout(() => (el.hidden = true), 4000);
 }
 
-const state = { summary: null, loggedIn: null, view: "today", settings: null };
+const state = { summary: null, loggedIn: null, view: "today", settings: null, followed: [] };
 
 // ---------- Navigation ----------
 
@@ -45,6 +45,7 @@ function showView(view) {
   $("view-login").hidden = !(view === "today" && todayView === "login");
   $("view-today").hidden = !(view === "today" && todayView === "today");
   $("view-games").hidden = view !== "games";
+  $("view-followed").hidden = view !== "followed";
   $("view-settings").hidden = view !== "settings";
   if (view === "games" && !games.catalog && !games.loading) loadCatalog(false);
 }
@@ -112,9 +113,10 @@ function renderSummary(summary) {
 
   const cards = summary.punchCards;
   $("punch-panel").hidden = cards.length === 0;
-  $("punch-cards").replaceChildren(...cards.map(questItem));
+  $("punch-cards").replaceChildren(...cards.map((card) => questItem(card)));
 
   renderGames();
+  renderFollowed();
 }
 
 async function refresh() {
@@ -247,15 +249,15 @@ function stepItem(step) {
       button));
 }
 
-function questItem(card) {
+function questItem(card, { open = false } = {}) {
   const meta = [];
   if (card.total) meta.push(`${card.done} / ${card.total} tâches`);
   if (card.expiresAt) meta.push(`expire le ${expiryFormat.format(new Date(card.expiresAt))}`);
   const hasDetails = card.description || card.steps.length || card.imageUrl;
   const details = hasDetails
-    ? h("details", { class: "quest-details" },
+    ? h("details", { class: "quest-details", open },
         h("summary", {}, "Voir le détail"),
-        h("div", { class: "quest-body" },
+        h("div", { class: card.imageUrl ? "quest-body" : "quest-body no-image" },
           card.imageUrl ? h("img", { src: card.imageUrl, alt: "", loading: "lazy" }) : null,
           h("div", { class: "quest-text" },
             card.description ? h("p", { class: "desc" }, card.description) : null,
@@ -270,7 +272,65 @@ function questItem(card) {
         " ", card.xbox ? h("span", { class: "tag" }, "Xbox") : null),
       meta.length ? h("div", { class: "desc" }, meta.join(" · ")) : null,
       details),
-    h("span", { class: "pts" }, card.points ? `${card.points} pts` : ""));
+    h("div", { class: "quest-side" },
+      starButton(card),
+      card.points ? h("span", { class: "pts" }, `${card.points} pts`) : null));
+}
+
+// ---------- Quêtes suivies ----------
+
+const isFollowed = (id) => state.followed.some((q) => q.id === id);
+
+function starButton(quest) {
+  const followed = isFollowed(quest.id);
+  return h("button", {
+    class: `star${followed ? " on" : ""}`,
+    type: "button",
+    "aria-pressed": followed ? "true" : "false",
+    title: followed ? "Ne plus suivre cette quête" : "Suivre cette quête",
+    onclick: () => toggleFollow(quest, !followed),
+  }, followed ? "★" : "☆");
+}
+
+async function toggleFollow(quest, follow) {
+  try {
+    state.followed = await invoke("follow_quest", { id: quest.id, title: quest.title, url: quest.url ?? null, follow });
+  } catch (err) {
+    toast(String(err));
+    return;
+  }
+  toast(follow ? `« ${quest.title} » ajoutée aux quêtes suivies.` : `« ${quest.title} » n'est plus suivie.`);
+  if (state.summary) renderSummary(state.summary);
+  else renderFollowed();
+}
+
+function renderFollowed() {
+  const count = state.followed.length;
+  $("followed-count").textContent = count;
+  $("followed-count").hidden = count === 0;
+
+  const cards = new Map((state.summary?.punchCards ?? []).map((c) => [c.id, c]));
+  // Les quêtes en cours d'abord, puis les terminées, puis celles que Microsoft ne propose plus.
+  const rank = (q) => {
+    const card = cards.get(q.id);
+    return !card ? 2 : card.complete ? 1 : 0;
+  };
+  const items = [...state.followed].sort((a, b) => rank(a) - rank(b)).map((quest) => {
+    const card = cards.get(quest.id);
+    if (card) return questItem(card, { open: true });
+    const reason = state.summary
+      ? "Microsoft ne propose plus cette quête : elle est terminée ou expirée."
+      : "Connectez-vous pour voir l'avancement de cette quête.";
+    return h("li", {},
+      h("span", { class: "state" }),
+      h("div", {},
+        h("div", { class: "title" },
+          quest.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(quest.url); } }, quest.title) : quest.title),
+        h("div", { class: "desc" }, `${reason} Suivie depuis le ${expiryFormat.format(new Date(quest.followedOn))}.`)),
+      h("div", { class: "quest-side" }, starButton(quest)));
+  });
+  $("followed-list").replaceChildren(...(items.length ? items
+    : [h("li", { class: "empty" }, "Aucune quête suivie pour l'instant. Cliquez sur l'étoile ☆ d'une quête pour la retrouver ici.")]));
 }
 
 function renderGameQuests() {
@@ -286,7 +346,7 @@ function renderGameQuests() {
   // Sans recherche, seules les activités Xbox sont montrées à côté des cartes à poinçonner.
   const activities = [...summary.dailySet, ...summary.more]
     .filter((a) => !a.complete && (q ? matches(q, a.title, a.description, a.id) : a.xbox));
-  const items = [...cards.map(questItem), ...activities.map(activityItem)];
+  const items = [...cards.map((card) => questItem(card)), ...activities.map(activityItem)];
   list.replaceChildren(...(items.length ? items : [h("li", { class: "empty" }, q
     ? `Aucune quête en cours pour « ${q} ». Les quêtes liées à un jeu apparaissent lors d'événements : revenez plus tard.`
     : "Aucune quête de jeu en cours sur votre compte.")]));
@@ -470,18 +530,21 @@ listen("check-update-requested", () => {
 
 (async function init() {
   $("today-date").textContent = dateFormat.format(new Date());
-  const [info, settings, autostart, xbox, cached] = await Promise.all([
+  const [info, settings, autostart, xbox, cached, followed] = await Promise.all([
     invoke("app_info"),
     invoke("get_settings"),
     invoke("autostart_enabled"),
     invoke("xbox_progress"),
     invoke("cached_rewards"),
+    invoke("followed_quests"),
   ]);
+  state.followed = followed;
   $("version-line").textContent = `Version ${info.version}`;
   $("current-version").textContent = info.version;
   renderSettings(settings);
   $("autostart").checked = autostart;
   renderXbox(xbox);
+  renderFollowed();
   if (cached) {
     renderSummary(cached);
     setLoggedIn(true);

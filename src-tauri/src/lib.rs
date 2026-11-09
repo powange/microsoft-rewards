@@ -18,7 +18,7 @@ use tauri_plugin_opener::OpenerExt as _;
 
 use catalog::Catalog;
 use rewards::{FetchError, RewardsSummary};
-use store::{Settings, Store, XboxProgress};
+use store::{FollowedQuest, Settings, Store, XboxProgress};
 use updater::UpdateInfo;
 
 /// Argument passé par le démarrage automatique de Windows : l'app démarre dans le tray.
@@ -136,6 +136,22 @@ fn xbox_progress(state: State<AppState>) -> XboxProgress {
 fn set_xbox_today(state: State<AppState>, game: Option<String>) -> XboxProgress {
     state.store.set_xbox_today(game);
     state.store.xbox_progress()
+}
+
+#[tauri::command]
+fn followed_quests(state: State<AppState>) -> Vec<FollowedQuest> {
+    state.store.followed_quests()
+}
+
+#[tauri::command]
+fn follow_quest(
+    state: State<AppState>,
+    id: String,
+    title: String,
+    url: Option<String>,
+    follow: bool,
+) -> Vec<FollowedQuest> {
+    state.store.set_followed(&id, &title, url, follow)
 }
 
 #[tauri::command]
@@ -269,6 +285,8 @@ pub fn run() {
             save_settings,
             xbox_progress,
             set_xbox_today,
+            followed_quests,
+            follow_quest,
             send_test_reminder,
             autostart_enabled,
             set_autostart,
