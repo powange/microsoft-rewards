@@ -11,9 +11,17 @@ on:
 permissions:
   contents: read
 
+# A newer push on the same branch cancels the run it supersedes; release tags always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 env:
   CARGO_TERM_COLOR: always
   TAURI_CLI_VERSION: 2.12.4
+  # Caches saved on a tag can only be restored by that same tag: only main saves caches,
+  # and release tags reuse them.
+  SAVE_CACHE: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
   check:
@@ -26,6 +34,8 @@ jobs:
         components: clippy, rustfmt
 
     - uses: Swatinem/rust-cache@v2
+      with:
+        save-if: ${{ env.SAVE_CACHE }}
 
     - name: Version matches the tag
       if: startsWith(github.ref, 'refs/tags/')
@@ -48,8 +58,8 @@ jobs:
       run: cargo test --workspace
 
   # Builds on main and pull requests: an installer to try, without updater signature.
+  # On main it also fills the release-build cache that tag builds restore.
   bundle:
-    needs: check
     if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: windows-latest
     steps:
@@ -58,6 +68,9 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
 
     - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: release-build
+        save-if: ${{ env.SAVE_CACHE }}
 
     - uses: actions/setup-node@v7
       with:
@@ -102,12 +115,10 @@ jobs:
         pubkey=$(jq -r .plugins.updater.pubkey src-tauri/tauri.conf.json | base64 -d | sed -n 2p)
         minisign -V -P "$pubkey" -m "$RUNNER_TEMP/probe.txt" -x "$RUNNER_TEMP/probe.minisig"
 
-  release:
-    needs: [check, updater-key]
+  # Built in parallel with the checks; nothing is published unless they all pass.
+  release-build:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: windows-latest
-    permissions:
-      contents: write  # create the GitHub release
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -117,6 +128,9 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
 
     - uses: Swatinem/rust-cache@v2
+      with:
+        shared-key: release-build
+        save-if: ${{ env.SAVE_CACHE }}
 
     - uses: actions/setup-node@v7
       with:
@@ -131,9 +145,25 @@ jobs:
         cp target/release/bundle/nsis/*-setup.exe dist/RewardsAutoplay_Setup.exe
         cp target/release/bundle/nsis/*-setup.exe.sig dist/RewardsAutoplay_Setup.exe.sig
 
+    - uses: actions/upload-artifact@v7
+      with:
+        name: release-windows
+        path: dist/*
+        if-no-files-found: error
+
+  publish:
+    needs: [check, updater-key, release-build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write  # create the GitHub release
+    steps:
+    - uses: actions/download-artifact@v7
+      with:
+        name: release-windows
+        path: dist
+
     # latest.json is read by the in-app updater (plugins.updater.endpoints).
     - name: Checksums and updater manifest
-      shell: bash
       working-directory: dist
       run: |
         sha256sum RewardsAutoplay_Setup.exe > SHA256SUMS.txt
