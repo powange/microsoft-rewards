@@ -107,8 +107,10 @@ async fn redeem_catalog(app: AppHandle, force: bool) -> Result<Catalog, String> 
     Ok(catalog)
 }
 
+/// Doit rester `async` : sous Windows, créer une fenêtre depuis une commande synchrone
+/// bloque WebView2 et la fenêtre de connexion reste blanche.
 #[tauri::command]
-fn login(app: AppHandle) -> Result<(), String> {
+async fn login(app: AppHandle) -> Result<(), String> {
     auth::open_login(&app).map_err(|e| e.to_string())
 }
 
