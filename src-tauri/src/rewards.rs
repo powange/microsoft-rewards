@@ -15,6 +15,7 @@ use tauri::{AppHandle, Manager, Runtime};
 use url::Url;
 
 use crate::flight;
+use crate::streaks::{self, Streaks};
 
 const REWARDS_ORIGIN: &str = "https://rewards.bing.com/";
 const QUEST_PATH: &str = "/earn/quest/";
@@ -108,6 +109,7 @@ pub struct RewardsSummary {
     pub daily_set: Vec<Activity>,
     pub more: Vec<Activity>,
     pub punch_cards: Vec<PunchCard>,
+    pub streaks: Streaks,
 }
 
 impl RewardsSummary {
@@ -302,6 +304,7 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
             add_banner_quests(&earn, &mut cards);
             cards
         },
+        streaks: streaks::parse(&earn),
     })
 }
 

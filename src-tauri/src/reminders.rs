@@ -1,4 +1,5 @@
-//! Boucle de fond : rappel quotidien de ce qu'il reste à faire et vérification des mises à jour.
+//! Boucle de fond : actualisation automatique des données, rappel quotidien de ce qu'il reste
+//! à faire et vérification des mises à jour.
 
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,12 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>) {
             {
                 last_update_check = Some(Instant::now());
                 crate::updater::background_check(&app).await;
+            }
+            if let Some(interval) = settings.refresh_interval() {
+                let last = *app.state::<AppState>().last_refresh.lock().unwrap();
+                if last.is_none_or(|t| t.elapsed() >= interval) {
+                    let _ = crate::refresh(&app).await;
+                }
             }
             maybe_remind(&app, &settings).await;
         }
@@ -53,23 +60,37 @@ pub async fn send<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Vec<St
 
 async fn todo_lines<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Vec<String> {
     let mut lines = Vec::new();
-    if settings.remind_bing {
+    if settings.remind_bing || settings.remind_streaks {
         match crate::refresh(app).await {
             Ok(summary) => {
-                let points = summary.search_points_left();
-                if points > 0 {
-                    lines.push(format!("Bing : {points} points de recherche à gagner"));
+                if settings.remind_bing {
+                    let points = summary.search_points_left();
+                    if points > 0 {
+                        lines.push(format!("Bing : {points} points de recherche à gagner"));
+                    }
+                    match summary.daily_set_left() {
+                        0 => {}
+                        1 => lines.push("Bing : 1 activité du jour à faire".into()),
+                        n => lines.push(format!("Bing : {n} activités du jour à faire")),
+                    }
                 }
-                match summary.daily_set_left() {
-                    0 => {}
-                    1 => lines.push("Bing : 1 activité du jour à faire".into()),
-                    n => lines.push(format!("Bing : {n} activités du jour à faire")),
+                if settings.remind_streaks {
+                    // Un jour manqué remet la série à zéro : c'est le rappel le plus utile.
+                    for streak in summary.streaks.streaks.iter().filter(|s| !s.today_done) {
+                        lines.push(format!(
+                            "{} : {} ({}/{} jours)",
+                            streak.title,
+                            streak.today_label,
+                            streak.completed_days,
+                            streak.total_days
+                        ));
+                    }
                 }
             }
             Err(FetchError::NotLoggedIn) => {
                 lines.push("Connectez-vous dans Rewards Autoplay pour suivre vos points".into())
             }
-            Err(err) => log::warn!("Rappel sans données Bing : {err}"),
+            Err(err) => log::warn!("Rappel sans données Rewards : {err}"),
         }
     }
     if settings.remind_xbox {

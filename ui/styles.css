@@ -11,6 +11,8 @@
   --info: #1f5f8b;
   --info-soft: #dfeef8;
   --danger: #b42318;
+  --warn: #a24c12;
+  --warn-line: #e9b48a;
   --danger-soft: #fde4e1;
   --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-display: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
@@ -30,6 +32,8 @@
     --info: #7cbfe8;
     --info-soft: #13293a;
     --danger: #f8776b;
+    --warn: #f0a565;
+    --warn-line: #6b4320;
     --danger-soft: #3d1916;
     color-scheme: dark;
   }
@@ -159,6 +163,25 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .catalog .old { text-decoration: line-through; color: var(--muted); font-weight: 400; margin-left: 6px; }
 .catalog .afford { color: var(--accent); font-size: 12.5px; }
 .catalog .missing { color: var(--muted); font-size: 12.5px; }
+
+.streaks { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+.streak { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: grid; gap: 8px; align-content: start; }
+.streak.todo { border-color: var(--warn-line); }
+.streak img { width: 100%; aspect-ratio: 16 / 7; object-fit: cover; border-radius: 6px; background: var(--line); }
+.days { display: flex; gap: 3px; align-items: center; flex-wrap: wrap; }
+.day { min-width: 22px; height: 22px; padding: 0 5px; border-radius: 99px; border: 1px solid var(--line); display: inline-grid; place-items: center; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.day.done { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.day.today { outline: 2px solid var(--accent); outline-offset: 1px; }
+.day.bonus:not(.done) { color: var(--fg); }
+.streak-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; }
+.streak-foot .ok { color: var(--accent); }
+.streak-foot .warn { color: var(--warn); font-weight: 600; }
+.stamps .bonus-title { font-size: 18px; color: var(--accent); }
+.stamp-grid { display: grid; grid-template-columns: repeat(6, 22px); gap: 6px; }
+.stamp { width: 22px; height: 22px; border-radius: 50%; border: 1px dashed var(--muted); }
+.stamp.on { background: var(--accent); border: 1px solid var(--accent); }
+.inline-field { display: flex; align-items: center; gap: 8px; }
+.inline-field input { width: 90px; }
 
 .choices { display: grid; gap: 10px; }
 .choice { display: grid; grid-template-columns: 20px 1fr; gap: 8px; align-items: start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }

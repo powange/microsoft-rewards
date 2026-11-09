@@ -6,9 +6,12 @@ Application Windows (Rust + Tauri 2) qui suit vos points Microsoft Rewards et vo
 
 - Connexion au compte Microsoft sur la page officielle de Microsoft Rewards, dans une fenêtre dédiée. L'application ne voit jamais le mot de passe.
 - Tableau de bord : solde de points, niveau, recherches Bing du jour, activités du jour, cartes à poinçonner et autres activités.
+- Séries (Recherche Bing, série quotidienne, application Bing) avec la frise des 7 jours, l'état du jour et la carte des 12 tampons bonus.
+- Quêtes suivies : une étoile sur chaque quête pour la retrouver, avec toutes ses étapes, dans une page dédiée.
+- Actualisation automatique des points, séries et quêtes toutes les N minutes (réglable, 30 par défaut).
 - Récompenses par jeu : recherche d'un jeu (ex. Sea of Thieves) pour voir les quêtes en cours qui le concernent (cartes à poinçonner avec leurs étapes, lien vers la page de la quête) et les articles du catalogue d'échange (prix, points manquants).
 - Suivi des quêtes Xbox : jeu quotidien coché à la main, bonus hebdomadaire (5 jours), jeux différents du mois pour les packs 4 et 8 jeux.
-- Mode **Rappels** : une notification par jour à l'heure choisie, avec ce qu'il reste à faire.
+- Mode **Rappels** : une notification par jour à l'heure choisie, avec ce qu'il reste à faire, dont les séries dont l'étape du jour n'est pas faite.
 - Zone de notification : fermer la fenêtre ne quitte pas l'application. Démarrage avec Windows en option.
 - Mise à jour depuis l'application (Paramètres › Mises à jour, ou menu de l'icône).
 
@@ -43,6 +46,7 @@ Structure :
 |---|---|
 | `src-tauri/src/lib.rs` | Démarrage, plugins, commandes appelées par l'interface |
 | `src-tauri/src/rewards.rs` | Lecture du tableau de bord Rewards (points, activités, quêtes) |
+| `src-tauri/src/streaks.rs` | Séries, tampons bonus et compteur de série |
 | `src-tauri/src/flight.rs` | Extraction des données intégrées aux pages Next.js du site Rewards |
 | `src-tauri/src/catalog.rs` | Catalogue d'échange, lu dans la page rewards.bing.com/redeem/shop |
 | `src-tauri/src/auth.rs` | Fenêtre de connexion Microsoft, déconnexion |

@@ -34,9 +34,16 @@ pub struct Settings {
     pub reminder_time: String,
     pub remind_bing: bool,
     pub remind_xbox: bool,
+    /// Rappeler les séries dont l'étape du jour n'est pas faite.
+    pub remind_streaks: bool,
     pub subscription: Subscription,
     pub auto_check_updates: bool,
+    /// Actualisation automatique des points, séries et quêtes, en minutes (0 = désactivée).
+    pub refresh_interval_minutes: u32,
 }
+
+/// En dessous, on solliciterait trop le site Rewards (une actualisation lit une dizaine de pages).
+pub const MIN_REFRESH_MINUTES: u32 = 5;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -45,8 +52,10 @@ impl Default for Settings {
             reminder_time: "19:00".into(),
             remind_bing: true,
             remind_xbox: true,
+            remind_streaks: true,
             subscription: Subscription::None,
             auto_check_updates: true,
+            refresh_interval_minutes: 30,
         }
     }
 }
@@ -55,6 +64,16 @@ impl Settings {
     pub fn reminder_time(&self) -> NaiveTime {
         NaiveTime::parse_from_str(&self.reminder_time, "%H:%M")
             .unwrap_or_else(|_| NaiveTime::from_hms_opt(19, 0, 0).unwrap())
+    }
+
+    /// Délai entre deux actualisations automatiques, `None` si elles sont désactivées.
+    pub fn refresh_interval(&self) -> Option<std::time::Duration> {
+        match self.refresh_interval_minutes {
+            0 => None,
+            minutes => Some(std::time::Duration::from_secs(
+                u64::from(minutes.max(MIN_REFRESH_MINUTES)) * 60,
+            )),
+        }
     }
 }
 

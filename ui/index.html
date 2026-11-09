@@ -63,6 +63,14 @@
             <ul id="daily-set" class="list"></ul>
           </article>
 
+          <article class="panel wide" id="streaks-panel" hidden>
+            <div class="panel-head">
+              <h2>Séries</h2>
+              <span class="muted small" id="streaks-info"></span>
+            </div>
+            <div class="streaks" id="streaks"></div>
+          </article>
+
           <article class="panel wide" id="xbox-panel">
             <div class="panel-head">
               <h2>Quêtes Xbox</h2>
@@ -171,8 +179,19 @@
             <span></span>
             <label class="check"><input type="checkbox" id="remind-xbox"> Jeu Xbox du jour pas encore fait</label>
             <span></span>
+            <label class="check"><input type="checkbox" id="remind-streaks"> Séries dont l'étape du jour n'est pas faite (un jour manqué remet la série à zéro)</label>
+            <span></span>
             <div><button class="btn" id="test-reminder">Envoyer le rappel maintenant</button> <span class="muted small" id="test-reminder-result"></span></div>
           </div>
+        </article>
+
+        <article class="panel">
+          <h2>Actualisation automatique</h2>
+          <div class="form">
+            <label for="refresh-interval">Actualiser toutes les</label>
+            <div class="inline-field"><input type="number" id="refresh-interval" min="0" max="1440" step="1"> minutes</div>
+          </div>
+          <p class="muted small">Points, activités, séries et quêtes sont relus automatiquement, même quand la fenêtre est fermée. 0 désactive l'actualisation automatique ; le minimum est de 5 minutes pour ne pas solliciter le site Rewards à l'excès.</p>
         </article>
 
         <article class="panel">

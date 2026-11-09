@@ -88,7 +88,9 @@ function renderSummary(summary) {
   if (summary.level) level.push(`Niveau : ${summary.level}`);
   if (summary.levelProgressMax) level.push(`${numberFormat.format(summary.levelProgress ?? 0)} / ${numberFormat.format(summary.levelProgressMax)} points vers le niveau suivant`);
   $("level").textContent = level.join(" · ");
-  $("fetched-at").textContent = `Actualisé à ${timeFormat.format(new Date(summary.fetchedAt))}`;
+  const every = state.settings?.refreshIntervalMinutes;
+  $("fetched-at").textContent = `Actualisé à ${timeFormat.format(new Date(summary.fetchedAt))}`
+    + (every ? ` · automatiquement toutes les ${every} min` : "");
   $("fetch-error").hidden = true;
 
   const searches = $("searches");
@@ -115,8 +117,57 @@ function renderSummary(summary) {
   $("punch-panel").hidden = cards.length === 0;
   $("punch-cards").replaceChildren(...cards.map((card) => questItem(card)));
 
+  renderStreaks(summary.streaks);
   renderGames();
   renderFollowed();
+}
+
+/** « dans 2 h 15 min » jusqu'à une date ISO. */
+function timeUntil(iso) {
+  const minutes = Math.max(0, Math.round((new Date(iso) - Date.now()) / 60000));
+  if (minutes < 60) return `dans ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return `dans ${hours} h${minutes % 60 ? ` ${minutes % 60} min` : ""}`;
+}
+
+function streakCard(streak) {
+  // Le jour en cours est le dernier validé s'il est fait, sinon le suivant.
+  const today = streak.todayDone ? streak.completedDays - 1 : streak.completedDays;
+  const days = Array.from({ length: streak.totalDays }, (_, i) => {
+    const points = streak.dailyPoints[i];
+    const classes = ["day", i < streak.completedDays ? "done" : "", i === today ? "today" : "", i === streak.totalDays - 1 ? "bonus" : ""];
+    return h("span", { class: classes.filter(Boolean).join(" "), title: `Jour ${i + 1}${points ? ` : ${points} pts` : ""}` },
+      i < streak.completedDays ? "✓" : "", i === today || i === streak.totalDays - 1 ? (points ?? "") : "");
+  });
+  return h("div", { class: `streak${streak.todayDone ? "" : " todo"}` },
+    streak.imageUrl ? h("img", { src: streak.imageUrl, alt: "", loading: "lazy" }) : null,
+    h("b", {}, streak.title),
+    h("div", { class: "days", "aria-label": `${streak.completedDays} jours sur ${streak.totalDays}` }, days),
+    h("div", { class: "streak-foot" },
+      h("span", { class: streak.todayDone ? "ok" : "warn" }, streak.todayDone ? `✓ ${streak.todayLabel}` : `À faire : ${streak.todayLabel}`),
+      streak.url ? h("button", { class: "btn small", type: "button", onclick: () => openUrl(streak.url) }, "Y aller ↗") : null));
+}
+
+function renderStreaks(data) {
+  const streaks = data?.streaks ?? [];
+  $("streaks-panel").hidden = streaks.length === 0 && !data?.stamps;
+  const info = [];
+  if (data?.counter != null) info.push(`Série en cours : ${data.counter} jour${data.counter > 1 ? "s" : ""}`);
+  if (data?.protectionOn != null) info.push(`protection ${data.protectionOn ? "activée" : "désactivée"}`);
+  if (data?.resetAt) info.push(`réinitialisation ${timeUntil(data.resetAt)}`);
+  $("streaks-info").textContent = info.join(" · ");
+
+  const cards = [];
+  if (data?.stamps) {
+    const { collected, total, bonusPoints } = data.stamps;
+    cards.push(h("div", { class: "streak stamps" },
+      h("b", { class: "bonus-title" }, `${numberFormat.format(bonusPoints)} points bonus`),
+      h("span", { class: "muted small" }, `Gagnez ${total} tampons : chaque série de 7 jours terminée en donne un.`),
+      h("div", { class: "stamp-grid" }, Array.from({ length: total }, (_, i) => h("span", { class: i < collected ? "stamp on" : "stamp" }))),
+      h("span", { class: "small" }, `${collected} / ${total} tampons`)));
+  }
+  cards.push(...streaks.map(streakCard));
+  $("streaks").replaceChildren(...cards);
 }
 
 async function refresh() {
@@ -433,8 +484,10 @@ async function saveSettings() {
     reminderTime: $("reminder-time").value || "19:00",
     remindBing: $("remind-bing").checked,
     remindXbox: $("remind-xbox").checked,
+    remindStreaks: $("remind-streaks").checked,
     subscription: $("subscription").value,
     autoCheckUpdates: $("auto-update").checked,
+    refreshIntervalMinutes: refreshMinutesInput(),
   };
   await invoke("save_settings", { settings: state.settings });
   renderXbox(await invoke("xbox_progress"));
@@ -446,11 +499,24 @@ function renderSettings(settings) {
   $("reminder-time").value = settings.reminderTime;
   $("remind-bing").checked = settings.remindBing;
   $("remind-xbox").checked = settings.remindXbox;
+  $("remind-streaks").checked = settings.remindStreaks;
   $("subscription").value = settings.subscription;
   $("auto-update").checked = settings.autoCheckUpdates;
+  $("refresh-interval").value = settings.refreshIntervalMinutes;
 }
 
-for (const id of ["reminder-time", "remind-bing", "remind-xbox", "subscription", "auto-update", "mode-reminders"]) {
+/** Délai saisi, ramené au minimum de 5 minutes (0 désactive l'actualisation automatique). */
+function refreshMinutesInput() {
+  const input = $("refresh-interval");
+  let minutes = Math.round(Number(input.value));
+  if (!Number.isFinite(minutes) || minutes < 0) minutes = 0;
+  if (minutes > 0 && minutes < 5) minutes = 5;
+  minutes = Math.min(minutes, 1440);
+  input.value = minutes;
+  return minutes;
+}
+
+for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "subscription", "auto-update", "refresh-interval", "mode-reminders"]) {
   $(id).addEventListener("change", saveSettings);
 }
 

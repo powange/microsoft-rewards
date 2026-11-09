@@ -4,6 +4,7 @@ mod flight;
 mod reminders;
 mod rewards;
 mod store;
+mod streaks;
 mod tray;
 mod updater;
 
@@ -34,6 +35,8 @@ pub struct AppState {
     pub summary: Mutex<Option<RewardsSummary>>,
     pub catalog: Mutex<Option<(Instant, Catalog)>>,
     pub notified_update: Mutex<Option<String>>,
+    /// Dernière actualisation des données, manuelle ou automatique.
+    pub last_refresh: Mutex<Option<Instant>>,
 }
 
 pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
@@ -53,6 +56,7 @@ pub fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
 /// Relit le tableau de bord Rewards, met à jour le cache, le tray et l'interface.
 pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<RewardsSummary, FetchError> {
     let client = app.state::<AppState>().http.clone();
+    *app.state::<AppState>().last_refresh.lock().unwrap() = Some(Instant::now());
     let result = rewards::fetch(app, &client).await;
     let state = app.state::<AppState>();
     match &result {
@@ -258,6 +262,7 @@ pub fn run() {
                 summary: Mutex::new(None),
                 catalog: Mutex::new(None),
                 notified_update: Mutex::new(None),
+                last_refresh: Mutex::new(None),
             });
             tray::create(app.handle())?;
             if !std::env::args().any(|arg| arg == MINIMIZED_ARG) {
