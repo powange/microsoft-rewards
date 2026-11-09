@@ -130,9 +130,20 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { font: 500 12.5px var(--font); padding: 5px 11px; border-radius: 99px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; }
 .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
-.steps { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 2px; font-size: 12.5px; color: var(--muted); }
-.steps li { display: flex; gap: 6px; padding: 0; border: 0; }
-.steps li.done { text-decoration: line-through; }
+.btn.small { padding: 4px 10px; font-size: 12.5px; }
+.quest-details { margin-top: 6px; }
+.quest-details summary { cursor: pointer; color: var(--accent); font-size: 12.5px; width: fit-content; }
+.quest-body { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 14px; margin-top: 10px; align-items: start; }
+.quest-body img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--line); }
+.quest-text { display: grid; gap: 10px; justify-items: start; }
+@media (max-width: 1000px) { .quest-body { grid-template-columns: 1fr; } .quest-body img { max-width: 320px; } }
+.quest-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; width: 100%; }
+.list .quest-steps li { display: grid; grid-template-columns: 18px 1fr; gap: 10px; padding: 0 0 10px; border-bottom: 1px solid var(--line); }
+.list .quest-steps li:last-child { border-bottom: 0; padding-bottom: 0; }
+.quest-steps .step-title { font-weight: 600; }
+.quest-steps li > div { display: grid; gap: 4px; justify-items: start; }
+.quest-steps .lock { width: 16px; height: 16px; margin-top: 2px; color: var(--muted); }
+.quest-steps li.locked .step-title { color: var(--muted); }
 .catalog { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 10px; }
 .catalog li { display: grid; grid-template-columns: 96px 1fr; gap: 12px; align-items: center; }
 .catalog img, .catalog .img { display: block; width: 96px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: var(--line); }

@@ -77,8 +77,22 @@ pub struct PunchCard {
 #[serde(rename_all = "camelCase")]
 pub struct Step {
     pub title: String,
-    pub points: i64,
+    pub description: String,
     pub complete: bool,
+    /// Étape pas encore accessible : il faut d'abord terminer les précédentes.
+    pub locked: bool,
+    /// Texte et lien du bouton de l'étape (« Commencez à rechercher »…).
+    pub link_text: Option<String>,
+    pub url: Option<String>,
+}
+
+/// Contenu de la page d'une quête.
+#[derive(Debug, Default)]
+struct QuestPage {
+    title: Option<String>,
+    description: Option<String>,
+    image_url: Option<String>,
+    steps: Vec<Step>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -186,7 +200,17 @@ pub async fn fetch<R: Runtime>(
     for (card, page) in summary.punch_cards.iter_mut().zip(pages) {
         match page.await {
             Ok(Ok(html)) => {
-                card.steps = quest_steps(&html);
+                let page = quest_page(&html);
+                if let Some(title) = page.title {
+                    card.title = title;
+                }
+                if let Some(description) = page.description {
+                    card.description = description;
+                }
+                if page.image_url.is_some() {
+                    card.image_url = page.image_url;
+                }
+                card.steps = page.steps;
                 // Quête venue d'une bannière : sa progression se déduit des étapes.
                 if card.total == 0 && !card.steps.is_empty() {
                     card.total = card.steps.len();
@@ -508,9 +532,8 @@ fn walk_card(
     }
     match value {
         Value::String(s) => {
-            if let Some(id) = s.strip_prefix("$L").or_else(|| s.strip_prefix('$')) {
-                let is_row = !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit());
-                if is_row && visited.insert(id.to_string()) {
+            if let Some(id) = row_reference(s) {
+                if visited.insert(id.to_string()) {
                     if let Some(row) = flight::row(text, id) {
                         walk_card(&row, text, info, visited, depth + 1);
                     }
@@ -588,32 +611,173 @@ fn parse_points(text: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
-/// Étapes d'une quête, sur sa page : objets dont l'`offerId` contient `pcchild`.
-fn quest_steps(html: &str) -> Vec<Step> {
+/// Page d'une quête : en-tête (titre, description, image) et liste des étapes.
+fn quest_page(html: &str) -> QuestPage {
     let text = flight::text(html);
-    let mut seen = HashSet::new();
-    flight::objects_with_key(&text, "offerId")
+    let mut page = QuestPage::default();
+
+    // L'en-tête est un composant {"description", "title"} dont le titre est aussi le texte
+    // alternatif de la grande image. La page contient d'autres objets de même forme
+    // (message d'erreur prêt à l'emploi), d'où la vérification par l'image.
+    let images: Vec<(String, String)> = flight::objects_with_key(&text, "alt")
         .into_iter()
-        .filter_map(|object| {
-            let id = object.get("offerId")?.as_str()?;
-            if !id.to_lowercase().contains("pcchild") || !seen.insert(id.to_string()) {
-                return None;
-            }
-            Some(Step {
-                title: object
-                    .get("title")?
-                    .as_str()
-                    .filter(|t| !t.is_empty())?
-                    .to_string(),
-                points: object
-                    .get("points")
-                    .or_else(|| object.get("pointProgressMax"))
-                    .and_then(as_int)
-                    .unwrap_or(0),
-                complete: is_true(&object, "isCompleted") || is_true(&object, "complete"),
-            })
+        .filter_map(|o| {
+            let alt = o.get("alt")?.as_str()?.to_string();
+            let src = o.get("src")?.as_str()?.to_string();
+            src.starts_with("https://").then_some((alt, src))
         })
-        .collect()
+        .collect();
+    for header in flight::objects_with_key(&text, "title") {
+        let (Some(title), Some(description)) = (
+            header.get("title").and_then(Value::as_str),
+            header.get("description").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        if let Some((_, src)) = images.iter().find(|(alt, _)| alt == title) {
+            page.title = Some(title.to_string());
+            page.description = Some(description.to_string());
+            page.image_url = Some(src.clone());
+            break;
+        }
+    }
+
+    // Chaque étape est un élément ["$","div","<rang>",{"children":[icône, contenu]}], le
+    // contenu portant un titre h3. Étapes et contenus peuvent être des références $id.
+    let marker = "[\"$\",\"div\",\"";
+    let mut steps: Vec<(u32, Step)> = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find(marker) {
+        let at = from + found;
+        from = at + marker.len();
+        let Some(Ok(Value::Array(element))) = serde_json::Deserializer::from_str(&text[at..])
+            .into_iter::<Value>()
+            .next()
+        else {
+            continue;
+        };
+        let Some(rank) = element
+            .get(2)
+            .and_then(Value::as_str)
+            .and_then(|k| k.parse().ok())
+        else {
+            continue;
+        };
+        let Some([icon, content]) = element
+            .get(3)
+            .and_then(|props| props.get("children"))
+            .and_then(Value::as_array)
+            .and_then(|children| <&[Value; 2]>::try_from(children.as_slice()).ok())
+        else {
+            continue;
+        };
+        if let Some(step) = quest_step(icon, content, &text) {
+            if !steps.iter().any(|(_, s)| s.title == step.title) {
+                steps.push((rank, step));
+            }
+        }
+    }
+    steps.sort_by_key(|(rank, _)| *rank);
+    page.steps = steps.into_iter().map(|(_, step)| step).collect();
+    page
+}
+
+fn quest_step(icon: &Value, content: &Value, text: &str) -> Option<Step> {
+    let mut title = None;
+    let mut description = None;
+    let mut button: Option<Map<String, Value>> = None;
+    visit(content, text, &mut |node| {
+        if let Value::Array(items) = node {
+            if items.len() == 4 && items[0] == "$" {
+                let children = items[3].get("children").and_then(Value::as_str);
+                match items[1].as_str() {
+                    Some("h3") if title.is_none() => title = children.map(str::to_string),
+                    Some("p") if title.is_some() && description.is_none() => {
+                        description = children.map(str::to_string)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if let Value::Object(object) = node {
+            if button.is_none() && object.contains_key("linkText") {
+                button = Some(object.clone());
+            }
+        }
+    });
+    let title = title.filter(|t| !t.is_empty())?;
+
+    // L'icône d'une étape terminée est un cercle « succès » ; une étape terminée n'a plus de bouton.
+    let mut success_icon = false;
+    let mut icon_has_title = false;
+    visit(icon, text, &mut |node| {
+        if let Some(class) = node.get("className").and_then(Value::as_str) {
+            success_icon |= class.contains("statusSuccess");
+        }
+        if let Value::Array(items) = node {
+            icon_has_title |= items.len() == 4 && items[0] == "$" && items[1] == "h3";
+        }
+    });
+    if icon_has_title {
+        return None;
+    }
+    let button = button.unwrap_or_default();
+    let complete = success_icon || is_true(&button, "isCompleted");
+    let url = button
+        .get("href")
+        .and_then(Value::as_str)
+        .and_then(|href| Url::parse(REWARDS_ORIGIN).ok()?.join(href).ok())
+        .map(|u| u.to_string());
+    Some(Step {
+        title,
+        description: description.unwrap_or_default(),
+        complete,
+        locked: !complete && is_true(&button, "isLocked"),
+        link_text: button
+            .get("linkText")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        url,
+    })
+}
+
+/// Parcourt un élément et tous ses descendants, en suivant les références `$id`.
+fn visit(value: &Value, text: &str, f: &mut dyn FnMut(&Value)) {
+    fn go(
+        value: &Value,
+        text: &str,
+        f: &mut dyn FnMut(&Value),
+        seen: &mut HashSet<String>,
+        depth: usize,
+    ) {
+        if depth > 60 {
+            return;
+        }
+        f(value);
+        match value {
+            Value::String(s) => {
+                if let Some(id) = row_reference(s) {
+                    if seen.insert(id.to_string()) {
+                        if let Some(row) = flight::row(text, id) {
+                            go(&row, text, f, seen, depth + 1);
+                        }
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|v| go(v, text, f, seen, depth + 1)),
+            Value::Object(object) => object
+                .values()
+                .for_each(|v| go(v, text, f, seen, depth + 1)),
+            _ => {}
+        }
+    }
+    go(value, text, f, &mut HashSet::new(), 0);
+}
+
+/// `"$6a"` ou `"$L6a"` → `6a` ; les autres chaînes (`$undefined`, `$D2026…`) ne sont pas des références.
+fn row_reference(s: &str) -> Option<&str> {
+    let id = s.strip_prefix("$L").or_else(|| s.strip_prefix('$'))?;
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit())).then_some(id)
 }
 
 fn first_int(text: &str, key: &str) -> Option<i64> {
@@ -744,17 +908,42 @@ mod tests {
         );
     }
 
+    /// Extrait réduit de la vraie page de la quête Sea of Thieves (novembre 2026).
+    const QUEST_ROWS: &str = r#"1:["$","$L20",null,{"title":"Nous avons rencontré un problème.","description":"Désolé..."}]
+4d:["$","div",null,{"children":[["$","$L3f",null,{"alt":"Sea of Thieves - Sabre","src":"https://bing.com/th?id=OMR.SoT_1200x675.jpg&pid=Rewards"}],["$","$L67",null,{"description":"Émerveillez vos amis. La quête se termine le 15 janvier 2027.","title":"Sea of Thieves - Sabre"}],["$","div",null,{"children":[["$","h3",null,{"children":"Conditions générales"}],["$","p",null,{"children":"Offre valable…"}]]}]]}]
+50:["$","div",null,{"className":"flex flex-col gap-4","children":[["$","div","0",{"className":"flex flex-row","children":[["$","div",null,{"children":["$","div",null,{"className":"flex rounded-cornerCircular bg-statusSuccessRewardsBg","children":["$","svg",null,{"children":"$L69"}]}]}],"$L6a"]}],"$L6b"]}]
+69:["$","path",null,{"d":"m1.147 2.919 1.788 1.953 3.25-3.743"}]
+6a:["$","div",null,{"children":[["$","div",null,{"children":[["$","h3",null,{"children":"Mettez les voiles vers le site officiel"}],["$","p",null,{"children":"Découvrez le site officiel."}],false,null]}],false]}]
+6b:["$","div","1",{"className":"flex flex-row","children":[["$","div",null,{"children":["$","svg",null,{"children":["$","path",null,{"d":"M5 3.5a3 3 0 0 1 6 0V4h.5"}]}]}],["$","div",null,{"children":[["$","div",null,{"children":[["$","h3",null,{"children":"Recherche à terminer"}],["$","p",null,{"children":"Recherchez avec Bing sur ordinateur (2/5 jours terminés)."}]]}],["$","$L6f",null,{"href":"https://www.bing.com/search?q=Sea+of+Thieves","isCompleted":false,"isLocked":true,"linkText":"Commencez à rechercher","offerId":"WW_evergreen_pcchild2_SeaofThieves"}]]}]]}]
+"#;
+
     #[test]
-    fn parses_quest_steps() {
-        let html = page(
-            r#"4:[{"offerId":"WW_pcparent_SoT_punchcard","title":"Parent"},{"offerId":"WW_pcchild_SoT_1","title":"Jouez 15 minutes","points":0,"isCompleted":true},{"offerId":"WW_pcchild_SoT_2","title":"Revenez demain","points":25,"isCompleted":false},{"offerId":"WW_pcchild_SoT_1","title":"Jouez 15 minutes"}]"#,
-        );
-        let steps = quest_steps(&html);
-        assert_eq!(steps.len(), 2);
-        assert!(steps[0].complete);
+    fn parses_quest_page_header_and_steps() {
+        let quest = quest_page(&page(QUEST_ROWS));
+        assert_eq!(quest.title.as_deref(), Some("Sea of Thieves - Sabre"));
+        assert!(quest.description.unwrap().contains("15 janvier 2027"));
+        assert!(quest.image_url.unwrap().contains("SoT_1200x675"));
+
+        let titles: Vec<_> = quest.steps.iter().map(|s| s.title.as_str()).collect();
         assert_eq!(
-            (steps[1].title.as_str(), steps[1].points),
-            ("Revenez demain", 25)
+            titles,
+            [
+                "Mettez les voiles vers le site officiel",
+                "Recherche à terminer"
+            ]
+        );
+        let first = &quest.steps[0];
+        assert!(first.complete && !first.locked);
+        assert_eq!(first.description, "Découvrez le site officiel.");
+        assert_eq!(first.link_text, None);
+
+        let search = &quest.steps[1];
+        assert!(!search.complete && search.locked);
+        assert!(search.description.contains("2/5 jours"));
+        assert_eq!(search.link_text.as_deref(), Some("Commencez à rechercher"));
+        assert_eq!(
+            search.url.as_deref(),
+            Some("https://www.bing.com/search?q=Sea+of+Thieves")
         );
     }
 

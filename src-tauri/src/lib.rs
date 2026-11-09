@@ -25,15 +25,6 @@ use updater::UpdateInfo;
 const MINIMIZED_ARG: &str = "--minimized";
 /// Identifiant de l'app Xbox pour PC, utilisé pour l'ouvrir sur le Rewards Hub.
 const XBOX_APP_AUMID: &str = "Microsoft.GamingApp_8wekyb3d8bbwe!Microsoft.Xbox.App";
-/// Domaines que l'interface peut ouvrir dans le navigateur.
-const OPENABLE_HOSTS: &[&str] = &[
-    "bing.com",
-    "microsoft.com",
-    "xbox.com",
-    "live.com",
-    "msn.com",
-    "github.com",
-];
 /// Le catalogue d'échange change rarement : il est relu au plus toutes les 6 heures.
 const CATALOG_MAX_AGE: Duration = Duration::from_secs(6 * 3600);
 
@@ -179,15 +170,12 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
     updater::install(&app).await
 }
 
+/// Ouvre un lien dans le navigateur. Les liens viennent des pages Microsoft Rewards
+/// (boutons des quêtes vers Bing, YouTube, Spotify…) : seul le https est exigé.
 #[tauri::command]
 fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|e| e.to_string())?;
-    let host = parsed.host_str().unwrap_or_default();
-    let allowed = parsed.scheme() == "https"
-        && OPENABLE_HOSTS
-            .iter()
-            .any(|h| host == *h || host.ends_with(&format!(".{h}")));
-    if !allowed {
+    if parsed.scheme() != "https" {
         return Err(format!("Adresse non autorisée : {url}"));
     }
     app.opener()

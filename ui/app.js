@@ -218,14 +218,50 @@ function matches(query, ...texts) {
 
 const expiryFormat = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long" });
 
-function questItem(card) {
-  const steps = card.steps.length
-    ? h("ul", { class: "steps" }, card.steps.map((s) => h("li", { class: s.complete ? "done" : "" },
-        s.complete ? "✓" : "○", ` ${s.title}`, s.points ? ` · ${s.points} pts` : "")))
+/** Cadenas des étapes verrouillées (même dessin que sur le site Rewards). */
+function lockIcon() {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("class", "lock");
+  svg.setAttribute("aria-label", "Verrouillée");
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("fill", "currentColor");
+  path.setAttribute("d", "M5 3.5a3 3 0 0 1 6 0V4h.5A2.5 2.5 0 0 1 14 6.5v5a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 2 11.5v-5A2.5 2.5 0 0 1 4.5 4H5zm3-2a2 2 0 0 0-2 2V4h4v-.5a2 2 0 0 0-2-2M8 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2");
+  svg.append(path);
+  return svg;
+}
+
+function stepItem(step) {
+  const icon = step.locked
+    ? lockIcon()
+    : h("span", { class: `state${step.complete ? " done" : ""}`, "aria-label": step.complete ? "Terminée" : "À faire" });
+  const button = step.url && step.linkText && !step.complete
+    ? h("button", { class: "btn small", type: "button", disabled: step.locked, onclick: () => openUrl(step.url) }, `${step.linkText} ↗`)
     : null;
+  return h("li", { class: step.complete ? "done" : step.locked ? "locked" : "" },
+    icon,
+    h("div", {},
+      h("div", { class: "step-title" }, step.title),
+      step.description ? h("div", { class: "desc" }, step.description) : null,
+      button));
+}
+
+function questItem(card) {
   const meta = [];
   if (card.total) meta.push(`${card.done} / ${card.total} tâches`);
   if (card.expiresAt) meta.push(`expire le ${expiryFormat.format(new Date(card.expiresAt))}`);
+  const hasDetails = card.description || card.steps.length || card.imageUrl;
+  const details = hasDetails
+    ? h("details", { class: "quest-details" },
+        h("summary", {}, "Voir le détail"),
+        h("div", { class: "quest-body" },
+          card.imageUrl ? h("img", { src: card.imageUrl, alt: "", loading: "lazy" }) : null,
+          h("div", { class: "quest-text" },
+            card.description ? h("p", { class: "desc" }, card.description) : null,
+            card.steps.length ? h("ol", { class: "quest-steps" }, card.steps.map(stepItem)) : null,
+            card.url ? h("button", { class: "btn small ghost", type: "button", onclick: () => openUrl(card.url) }, "Ouvrir la quête sur Microsoft Rewards ↗") : null)))
+    : null;
   return h("li", { class: card.complete ? "done" : "" },
     h("span", { class: `state${card.complete ? " done" : ""}` }),
     h("div", {},
@@ -233,8 +269,7 @@ function questItem(card) {
         card.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(card.url); } }, card.title) : card.title,
         " ", card.xbox ? h("span", { class: "tag" }, "Xbox") : null),
       meta.length ? h("div", { class: "desc" }, meta.join(" · ")) : null,
-      card.description ? h("div", { class: "desc" }, card.description) : null,
-      steps),
+      details),
     h("span", { class: "pts" }, card.points ? `${card.points} pts` : ""));
 }
 
