@@ -12,6 +12,7 @@ use url::Url;
 
 const REWARDS_ORIGIN: &str = "https://rewards.bing.com/";
 const USER_INFO_URL: &str = "https://rewards.bing.com/api/getuserinfo?type=1";
+const QUEST_URL: &str = "https://rewards.bing.com/earn/quest/";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
     (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0";
 
@@ -50,14 +51,27 @@ pub struct Activity {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PunchCard {
+    /// Identifiant de l'offre, qui contient souvent le nom du jeu
+    /// (ex. `WW_evergreen_pcparent_SeaofThieves_CeruleanSheenCutlass_punchcard`).
+    pub id: String,
     pub title: String,
     pub description: String,
     pub points: i64,
     pub done: usize,
     pub total: usize,
     pub complete: bool,
+    /// Page de la quête sur rewards.bing.com.
     pub url: Option<String>,
     pub xbox: bool,
+    pub steps: Vec<Step>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Step {
+    pub title: String,
+    pub points: i64,
+    pub complete: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -105,7 +119,7 @@ pub fn http_client() -> reqwest::Client {
 ///
 /// L'API cookies de WebView2 se bloque si on l'appelle depuis le thread principal :
 /// la lecture se fait donc sur un thread dédié.
-async fn session_cookie_header<R: Runtime>(app: &AppHandle<R>) -> Result<String, FetchError> {
+pub async fn session_cookie_header<R: Runtime>(app: &AppHandle<R>) -> Result<String, FetchError> {
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| FetchError::Unexpected("fenêtre principale introuvable".into()))?;
@@ -278,7 +292,29 @@ fn punch_card(card: &Value) -> Option<PunchCard> {
         .cloned()
         .unwrap_or_default();
     let description = str_field(parent, "description").unwrap_or_default();
-    let xbox = is_xbox(&[&title, &description]);
+    let id = str_field(parent, "offerId")
+        .or_else(|| str_field(parent, "name"))
+        .or_else(|| str_field(card, "name"))
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| title.clone());
+    let xbox = is_xbox(&[&title, &description, &id]);
+    let url = if id != title {
+        let mut url = Url::parse(QUEST_URL).unwrap();
+        url.path_segments_mut().unwrap().pop_if_empty().push(&id);
+        Some(url.to_string())
+    } else {
+        str_field(parent, "destinationUrl").filter(|u| u.starts_with("https://"))
+    };
+    let steps: Vec<Step> = children
+        .iter()
+        .filter_map(|child| {
+            Some(Step {
+                title: str_field(child, "title").filter(|t| !t.is_empty())?,
+                points: int_field(child, "pointProgressMax"),
+                complete: child["complete"].as_bool().unwrap_or(false),
+            })
+        })
+        .collect();
     Some(PunchCard {
         points: int_field(parent, "pointProgressMax"),
         done: children
@@ -287,10 +323,12 @@ fn punch_card(card: &Value) -> Option<PunchCard> {
             .count(),
         total: children.len(),
         complete: parent["complete"].as_bool().unwrap_or(false),
-        url: str_field(parent, "destinationUrl").filter(|u| u.starts_with("https://")),
+        id,
+        url,
         title,
         description,
         xbox,
+        steps,
     })
 }
 
@@ -349,8 +387,15 @@ mod tests {
                     { "offerId": "z", "title": "Sans points", "pointProgressMax": 0 }
                 ],
                 "punchCards": [{
-                    "parentPromotion": { "title": "Carte Game Pass", "pointProgressMax": 100 },
-                    "childPromotions": [{ "complete": true }, { "complete": false }]
+                    "parentPromotion": {
+                        "name": "WW_evergreen_pcparent_SeaofThieves_CeruleanSheenCutlass_punchcard",
+                        "title": "Sabre Cerulean Sheen",
+                        "pointProgressMax": 100
+                    },
+                    "childPromotions": [
+                        { "title": "Jouez 15 min", "pointProgressMax": 0, "complete": true },
+                        { "title": "Jouez encore", "complete": false }
+                    ]
                 }]
             }
         });
@@ -362,7 +407,12 @@ mod tests {
         assert_eq!(s.daily_set_left(), 1);
         assert_eq!(s.more.len(), 1);
         assert!(s.more[0].xbox);
-        assert_eq!((s.punch_cards[0].done, s.punch_cards[0].total), (1, 2));
+        let card = &s.punch_cards[0];
+        assert_eq!((card.done, card.total, card.steps.len()), (1, 2, 2));
+        assert_eq!(
+            card.url.as_deref(),
+            Some("https://rewards.bing.com/earn/quest/WW_evergreen_pcparent_SeaofThieves_CeruleanSheenCutlass_punchcard")
+        );
     }
 
     #[test]

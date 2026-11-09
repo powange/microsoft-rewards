@@ -6,6 +6,7 @@ Application Windows (Rust + Tauri 2) qui suit vos points Microsoft Rewards et vo
 
 - Connexion au compte Microsoft sur la page officielle de Microsoft Rewards, dans une fenêtre dédiée. L'application ne voit jamais le mot de passe.
 - Tableau de bord : solde de points, niveau, recherches Bing du jour, activités du jour, cartes à poinçonner et autres activités.
+- Récompenses par jeu : recherche d'un jeu (ex. Sea of Thieves) pour voir les quêtes en cours qui le concernent (cartes à poinçonner avec leurs étapes, lien vers la page de la quête) et les articles du catalogue d'échange (prix, points manquants).
 - Suivi des quêtes Xbox : jeu quotidien coché à la main, bonus hebdomadaire (5 jours), jeux différents du mois pour les packs 4 et 8 jeux.
 - Mode **Rappels** : une notification par jour à l'heure choisie, avec ce qu'il reste à faire.
 - Zone de notification : fermer la fenêtre ne quitte pas l'application. Démarrage avec Windows en option.
@@ -16,6 +17,7 @@ Le mode **Automatique** (lancement des jeux installés) n'est pas encore disponi
 ## Limites connues
 
 - Les points et activités viennent de l'API interne de rewards.bing.com (`/api/getuserinfo`), non documentée. Si Microsoft la change, l'affichage cassera : la dernière réponse brute est enregistrée dans le dossier des journaux (Paramètres › Ouvrir le dossier des journaux) pour diagnostiquer.
+- Le catalogue d'échange est lu dans les données intégrées à la page rewards.bing.com/redeem/shop (dernière page enregistrée dans le dossier des journaux). Une refonte du site peut le casser.
 - L'avancement des quêtes Xbox n'est pas publié par Microsoft : le suivi Xbox est déclaratif, et les points se réclament dans le Rewards Hub de l'app Xbox.
 
 ## Développement
@@ -41,6 +43,7 @@ Structure :
 |---|---|
 | `src-tauri/src/lib.rs` | Démarrage, plugins, commandes appelées par l'interface |
 | `src-tauri/src/rewards.rs` | Lecture et analyse du tableau de bord Rewards |
+| `src-tauri/src/catalog.rs` | Catalogue d'échange, lu dans la page rewards.bing.com/redeem/shop |
 | `src-tauri/src/auth.rs` | Fenêtre de connexion Microsoft, déconnexion |
 | `src-tauri/src/store.rs` | Réglages et historique Xbox (`state.json`) |
 | `src-tauri/src/reminders.rs` | Rappel quotidien et vérification des mises à jour |

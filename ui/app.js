@@ -44,7 +44,9 @@ function showView(view) {
   const todayView = state.loggedIn === false ? "login" : "today";
   $("view-login").hidden = !(view === "today" && todayView === "login");
   $("view-today").hidden = !(view === "today" && todayView === "today");
+  $("view-games").hidden = view !== "games";
   $("view-settings").hidden = view !== "settings";
+  if (view === "games" && !games.catalog && !games.loading) loadCatalog(false);
 }
 
 for (const item of document.querySelectorAll(".nav-item")) {
@@ -119,6 +121,8 @@ function renderSummary(summary) {
         " ", card.xbox ? h("span", { class: "tag" }, "Xbox") : null),
       h("div", { class: "desc" }, `${card.done} / ${card.total} étapes`)),
     h("span", { class: "pts" }, card.points ? `${card.points} pts` : ""))));
+
+  renderGames();
 }
 
 async function refresh() {
@@ -173,6 +177,7 @@ function dots(container, filled, total) {
 }
 
 function renderXbox(progress) {
+  state.xbox = progress;
   const today = $("xbox-today-state");
   if (progress.todayDone) {
     today.replaceChildren(h("span", { class: "ok" }, "Jeu quotidien fait"),
@@ -195,6 +200,7 @@ function renderXbox(progress) {
   $("month-games").textContent = progress.monthGames.join(", ");
 
   $("known-games").replaceChildren(...progress.knownGames.map((g) => h("option", { value: g })));
+  renderGames();
 }
 
 $("xbox-form").addEventListener("submit", async (e) => {
@@ -205,6 +211,125 @@ $("xbox-form").addEventListener("submit", async (e) => {
 });
 $("xbox-undo").addEventListener("click", async () => renderXbox(await invoke("set_xbox_today", { game: null })));
 $("open-xbox").addEventListener("click", () => invoke("open_xbox_app").catch((err) => toast(String(err))));
+
+// ---------- Récompenses par jeu ----------
+
+const games = { query: "", catalog: null, loading: false };
+
+/** « Sea of Thieves » et « SeaofThieves » doivent se correspondre : on compare sans accents, espaces ni ponctuation. */
+const normalize = (text) => (text ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function matches(query, ...texts) {
+  const q = normalize(query);
+  return !q || texts.some((t) => normalize(t).includes(q));
+}
+
+function questItem(card) {
+  const steps = card.steps.length
+    ? h("ul", { class: "steps" }, card.steps.map((s) => h("li", { class: s.complete ? "done" : "" },
+        s.complete ? "✓" : "○", ` ${s.title}`, s.points ? ` · ${s.points} pts` : "")))
+    : null;
+  return h("li", { class: card.complete ? "done" : "" },
+    h("span", { class: `state${card.complete ? " done" : ""}` }),
+    h("div", {},
+      h("div", { class: "title" },
+        card.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(card.url); } }, card.title) : card.title),
+      h("div", { class: "desc" }, card.total ? `${card.done} / ${card.total} étapes` : card.description),
+      steps),
+    h("span", { class: "pts" }, card.points ? `${card.points} pts` : ""));
+}
+
+function renderGameQuests() {
+  const list = $("game-quests");
+  const summary = state.summary;
+  const q = games.query;
+  if (!summary) {
+    list.replaceChildren(h("li", { class: "empty" },
+      state.loggedIn === false ? "Connectez-vous pour voir les quêtes en cours sur votre compte." : "Chargement…"));
+    return;
+  }
+  const cards = summary.punchCards.filter((c) => matches(q, c.title, c.description, c.id, ...c.steps.map((s) => s.title)));
+  // Sans recherche, seules les activités Xbox sont montrées à côté des cartes à poinçonner.
+  const activities = [...summary.dailySet, ...summary.more]
+    .filter((a) => !a.complete && (q ? matches(q, a.title, a.description, a.id) : a.xbox));
+  const items = [...cards.map(questItem), ...activities.map(activityItem)];
+  list.replaceChildren(...(items.length ? items : [h("li", { class: "empty" }, q
+    ? `Aucune quête en cours pour « ${q} ». Les quêtes liées à un jeu apparaissent lors d'événements : revenez plus tard.`
+    : "Aucune quête de jeu en cours sur votre compte.")]));
+}
+
+function catalogItem(item) {
+  const balance = state.summary?.availablePoints;
+  let status = null;
+  if (item.disabled) status = h("div", { class: "missing" }, "Indisponible pour le moment");
+  else if (balance !== undefined) status = item.price <= balance
+    ? h("div", { class: "afford" }, "Vous avez assez de points")
+    : h("div", { class: "missing" }, `Encore ${numberFormat.format(item.price - balance)} pts`);
+  return h("li", {},
+    item.imageUrl ? h("img", { src: item.imageUrl, alt: "", loading: "lazy" }) : h("span", { class: "img" }),
+    h("div", {},
+      h("div", { class: "title" }, h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(item.url); } }, item.title)),
+      h("div", { class: "price" }, `${numberFormat.format(item.price)} pts`,
+        item.originalPrice > item.price ? h("span", { class: "old" }, `${numberFormat.format(item.originalPrice)} pts`) : null),
+      status));
+}
+
+function renderGameCatalog() {
+  const list = $("game-catalog");
+  if (!games.catalog) {
+    list.replaceChildren();
+    return;
+  }
+  const items = games.catalog.items.filter((i) => matches(games.query, i.title, i.description));
+  $("catalog-title").textContent = `Échanger vos points (${items.length})`;
+  list.replaceChildren(...(items.length ? items.map(catalogItem)
+    : [h("li", { class: "empty muted" }, `Aucun article du catalogue Rewards pour « ${games.query} ».`)]));
+}
+
+function renderGameChips() {
+  const names = state.xbox?.knownGames ?? [];
+  $("game-chips").replaceChildren(...names.map((name) => h("button", {
+    class: "chip",
+    type: "button",
+    "aria-pressed": normalize(name) === normalize(games.query) ? "true" : "false",
+    onclick: () => setGameQuery(normalize(name) === normalize(games.query) ? "" : name),
+  }, name)));
+}
+
+function renderGames() {
+  renderGameChips();
+  renderGameQuests();
+  renderGameCatalog();
+}
+
+function setGameQuery(query) {
+  games.query = query.trim();
+  $("game-search").value = query;
+  renderGames();
+}
+
+async function loadCatalog(force) {
+  games.loading = true;
+  $("catalog-status").textContent = "Chargement du catalogue…";
+  $("catalog-refresh").disabled = true;
+  try {
+    games.catalog = await invoke("redeem_catalog", { force });
+    $("catalog-status").textContent = "";
+  } catch (err) {
+    $("catalog-status").textContent = `Catalogue indisponible : ${err}`;
+  } finally {
+    games.loading = false;
+    $("catalog-refresh").disabled = false;
+    renderGameCatalog();
+  }
+}
+
+$("game-search").addEventListener("input", (e) => {
+  games.query = e.target.value.trim();
+  renderGames();
+});
+$("game-search-form").addEventListener("submit", (e) => e.preventDefault());
+$("catalog-refresh").addEventListener("click", () => loadCatalog(true));
 
 // ---------- Paramètres ----------
 

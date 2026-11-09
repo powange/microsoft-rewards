@@ -1,4 +1,5 @@
 mod auth;
+mod catalog;
 mod reminders;
 mod rewards;
 mod store;
@@ -6,6 +7,7 @@ mod tray;
 mod updater;
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State, WindowEvent};
@@ -13,6 +15,7 @@ use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_notification::NotificationExt as _;
 use tauri_plugin_opener::OpenerExt as _;
 
+use catalog::Catalog;
 use rewards::{FetchError, RewardsSummary};
 use store::{Settings, Store, XboxProgress};
 use updater::UpdateInfo;
@@ -30,11 +33,14 @@ const OPENABLE_HOSTS: &[&str] = &[
     "msn.com",
     "github.com",
 ];
+/// Le catalogue d'échange change rarement : il est relu au plus toutes les 6 heures.
+const CATALOG_MAX_AGE: Duration = Duration::from_secs(6 * 3600);
 
 pub struct AppState {
     pub store: Store,
     pub http: reqwest::Client,
     pub summary: Mutex<Option<RewardsSummary>>,
+    pub catalog: Mutex<Option<(Instant, Catalog)>>,
     pub notified_update: Mutex<Option<String>>,
 }
 
@@ -84,6 +90,24 @@ fn cached_rewards(state: State<AppState>) -> Option<RewardsSummary> {
 }
 
 #[tauri::command]
+async fn redeem_catalog(app: AppHandle, force: bool) -> Result<Catalog, String> {
+    let state = app.state::<AppState>();
+    if !force {
+        if let Some((fetched, catalog)) = state.catalog.lock().unwrap().as_ref() {
+            if fetched.elapsed() < CATALOG_MAX_AGE {
+                return Ok(catalog.clone());
+            }
+        }
+    }
+    let client = state.http.clone();
+    let catalog = catalog::fetch(&app, &client)
+        .await
+        .map_err(|e| e.to_string())?;
+    *state.catalog.lock().unwrap() = Some((Instant::now(), catalog.clone()));
+    Ok(catalog)
+}
+
+#[tauri::command]
 fn login(app: AppHandle) -> Result<(), String> {
     auth::open_login(&app).map_err(|e| e.to_string())
 }
@@ -91,7 +115,9 @@ fn login(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn logout(app: AppHandle) -> Result<(), String> {
     auth::logout(&app).await?;
-    *app.state::<AppState>().summary.lock().unwrap() = None;
+    let state = app.state::<AppState>();
+    *state.summary.lock().unwrap() = None;
+    *state.catalog.lock().unwrap() = None;
     tray::set_points(&app, None);
     let _ = app.emit("rewards-logged-out", ());
     Ok(())
@@ -223,6 +249,7 @@ pub fn run() {
                 store: Store::load(state_file),
                 http: rewards::http_client(),
                 summary: Mutex::new(None),
+                catalog: Mutex::new(None),
                 notified_update: Mutex::new(None),
             });
             tray::create(app.handle())?;
@@ -244,6 +271,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             refresh_rewards,
             cached_rewards,
+            redeem_catalog,
             login,
             logout,
             get_settings,
