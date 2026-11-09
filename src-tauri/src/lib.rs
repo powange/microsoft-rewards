@@ -1,5 +1,6 @@
 mod auth;
 mod catalog;
+mod flight;
 mod reminders;
 mod rewards;
 mod store;

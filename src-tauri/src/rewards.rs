@@ -1,18 +1,23 @@
 //! Lecture du tableau de bord Microsoft Rewards.
 //!
 //! La connexion se fait dans une fenêtre WebView2 sur la vraie page Microsoft. Les cookies de
-//! cette session sont ensuite lus depuis le magasin de cookies de WebView2 et envoyés à
-//! l'API JSON interne du site rewards.bing.com (non documentée, susceptible de changer).
+//! cette session sont ensuite lus depuis le magasin de cookies de WebView2 et envoyés avec les
+//! requêtes vers les pages du site rewards.bing.com (/earn, /dashboard, /earn/quest/…).
+//! Ces pages sont rendues par Next.js : leurs données sont lues dans le flux intégré au HTML
+//! (voir [`crate::flight`]). Ce format n'est pas documenté et peut changer.
+
+use std::collections::HashSet;
 
 use chrono::{DateTime, Local};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tauri::{AppHandle, Manager, Runtime};
 use url::Url;
 
+use crate::flight;
+
 const REWARDS_ORIGIN: &str = "https://rewards.bing.com/";
-const USER_INFO_URL: &str = "https://rewards.bing.com/api/getuserinfo?type=1";
-const QUEST_URL: &str = "https://rewards.bing.com/earn/quest/";
+const QUEST_PATH: &str = "/earn/quest/";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
     (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0";
 
@@ -51,15 +56,17 @@ pub struct Activity {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PunchCard {
-    /// Identifiant de l'offre, qui contient souvent le nom du jeu
+    /// Identifiant de la quête, qui contient souvent le nom du jeu
     /// (ex. `WW_evergreen_pcparent_SeaofThieves_CeruleanSheenCutlass_punchcard`).
     pub id: String,
     pub title: String,
     pub description: String,
+    pub image_url: Option<String>,
     pub points: i64,
     pub done: usize,
     pub total: usize,
     pub complete: bool,
+    pub expires_at: Option<String>,
     /// Page de la quête sur rewards.bing.com.
     pub url: Option<String>,
     pub xbox: bool,
@@ -79,11 +86,10 @@ pub struct Step {
 pub struct RewardsSummary {
     pub fetched_at: DateTime<Local>,
     pub available_points: i64,
-    pub lifetime_points: i64,
     pub level: Option<String>,
+    /// Points gagnés vers le niveau suivant.
     pub level_progress: Option<i64>,
     pub level_progress_max: Option<i64>,
-    pub country: Option<String>,
     pub searches: Vec<Counter>,
     pub daily_set: Vec<Activity>,
     pub more: Vec<Activity>,
@@ -143,193 +149,486 @@ pub async fn fetch<R: Runtime>(
     client: &reqwest::Client,
 ) -> Result<RewardsSummary, FetchError> {
     let cookie = session_cookie_header(app).await?;
-    let response = client
-        .get(USER_INFO_URL)
-        .header("Cookie", cookie)
-        .header("Accept", "application/json")
-        .header("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.8")
-        .header("Referer", REWARDS_ORIGIN)
-        .send()
-        .await
-        .map_err(|e| FetchError::Network(e.to_string()))?;
-
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| FetchError::Network(e.to_string()))?;
-    save_diagnostic(app, &body);
-
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+    let (earn, final_url) = get(client, &cookie, &format!("{REWARDS_ORIGIN}earn")).await?;
+    save_diagnostic(app, "earn", &earn);
+    // Sans session valide, le site renvoie vers sa page de présentation ou de connexion.
+    if final_url.host_str() != Some("rewards.bing.com") || !final_url.path().starts_with("/earn") {
         return Err(FetchError::NotLoggedIn);
     }
-    if !status.is_success() {
-        return Err(FetchError::Unexpected(format!("statut HTTP {status}")));
-    }
-    if body.trim_start().starts_with('<') {
-        // Page HTML de connexion au lieu du JSON : la session n'est pas (ou plus) valide.
-        return Err(FetchError::NotLoggedIn);
-    }
-    let json: Value =
-        serde_json::from_str(&body).map_err(|e| FetchError::Unexpected(e.to_string()))?;
-    parse_dashboard(&json)
-}
-
-/// Garde la dernière réponse brute pour diagnostiquer un changement de format côté Microsoft.
-fn save_diagnostic<R: Runtime>(app: &AppHandle<R>, body: &str) {
-    if let Ok(dir) = app.path().app_log_dir() {
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = std::fs::write(dir.join("rewards-getuserinfo.json"), body);
-    }
-}
-
-fn parse_dashboard(json: &Value) -> Result<RewardsSummary, FetchError> {
-    let dashboard = json
-        .get("dashboard")
-        .filter(|d| d.is_object())
-        .ok_or(FetchError::NotLoggedIn)?;
-    let status = &dashboard["userStatus"];
-    if status.get("isRewardsUser").and_then(Value::as_bool) == Some(false) {
-        return Err(FetchError::NotLoggedIn);
-    }
-
-    let level_info = &status["levelInfo"];
-    let level = str_field(level_info, "activeLevelName")
-        .or_else(|| str_field(level_info, "activeLevel"))
-        .filter(|s| !s.is_empty());
-
-    let counters = &status["counters"];
-    let searches = [
-        ("pcSearch", "Recherches PC"),
-        ("mobileSearch", "Recherches mobile"),
-    ]
-    .into_iter()
-    .filter_map(|(key, label)| {
-        let items = counters.get(key)?.as_array()?;
-        if items.is_empty() {
-            return None;
+    let dashboard = match get(client, &cookie, &format!("{REWARDS_ORIGIN}dashboard")).await {
+        Ok((html, _)) => {
+            save_diagnostic(app, "dashboard", &html);
+            Some(html)
         }
-        Some(Counter {
-            label: label.into(),
-            progress: items.iter().map(|i| int_field(i, "pointProgress")).sum(),
-            max: items.iter().map(|i| int_field(i, "pointProgressMax")).sum(),
-        })
-    })
-    .collect();
-
-    // Le jeu d'activités du jour est indexé par date au format MM/JJ/AAAA.
-    let today_key = Local::now().format("%m/%d/%Y").to_string();
-    let daily_set = dashboard["dailySetPromotions"]
-        .get(&today_key)
-        .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(activity).collect())
-        .unwrap_or_default();
-
-    let mut more: Vec<Activity> = Vec::new();
-    for key in [
-        "morePromotions",
-        "morePromotionsWithoutPromotionalItems",
-        "promotionalItems",
-    ] {
-        if let Some(items) = dashboard[key].as_array() {
-            for item in items.iter().filter_map(activity) {
-                if !more.iter().any(|a| a.id == item.id) {
-                    more.push(item);
-                }
-            }
+        Err(err) => {
+            log::warn!("Page dashboard illisible : {err}");
+            None
         }
-    }
-
-    let punch_cards = dashboard["punchCards"]
-        .as_array()
-        .map(|cards| cards.iter().filter_map(punch_card).collect())
-        .unwrap_or_default();
-
-    Ok(RewardsSummary {
-        fetched_at: Local::now(),
-        available_points: int_field(status, "availablePoints"),
-        lifetime_points: int_field(status, "lifetimePoints"),
-        level,
-        level_progress: level_info.get("progress").and_then(as_int),
-        level_progress_max: level_info.get("progressMax").and_then(as_int),
-        country: str_field(&dashboard["userProfile"]["attributes"], "country"),
-        searches,
-        daily_set,
-        more,
-        punch_cards,
-    })
-}
-
-fn activity(item: &Value) -> Option<Activity> {
-    let title = str_field(item, "title")?;
-    let points = int_field(item, "pointProgressMax");
-    if title.is_empty() || points <= 0 {
-        return None;
-    }
-    let description = str_field(item, "description").unwrap_or_default();
-    let id = str_field(item, "offerId")
-        .or_else(|| str_field(item, "name"))
-        .unwrap_or_else(|| title.clone());
-    let xbox = is_xbox(&[&title, &description, &id]);
-    Some(Activity {
-        id,
-        description,
-        points,
-        complete: item["complete"].as_bool().unwrap_or(false),
-        locked: str_field(item, "exclusiveLockedFeatureStatus")
-            .is_some_and(|s| s.eq_ignore_ascii_case("locked")),
-        url: str_field(item, "destinationUrl").filter(|u| u.starts_with("https://")),
-        xbox,
-        title,
-    })
-}
-
-fn punch_card(card: &Value) -> Option<PunchCard> {
-    let parent = &card["parentPromotion"];
-    let title = str_field(parent, "title").filter(|t| !t.is_empty())?;
-    let children = card["childPromotions"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let description = str_field(parent, "description").unwrap_or_default();
-    let id = str_field(parent, "offerId")
-        .or_else(|| str_field(parent, "name"))
-        .or_else(|| str_field(card, "name"))
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| title.clone());
-    let xbox = is_xbox(&[&title, &description, &id]);
-    let url = if id != title {
-        let mut url = Url::parse(QUEST_URL).unwrap();
-        url.path_segments_mut().unwrap().pop_if_empty().push(&id);
-        Some(url.to_string())
-    } else {
-        str_field(parent, "destinationUrl").filter(|u| u.starts_with("https://"))
     };
-    let steps: Vec<Step> = children
+    let mut summary = parse(&earn, dashboard.as_deref())?;
+
+    // Les étapes de chaque quête ne figurent que sur la page de la quête.
+    let pages: Vec<_> = summary
+        .punch_cards
         .iter()
-        .filter_map(|child| {
-            Some(Step {
-                title: str_field(child, "title").filter(|t| !t.is_empty())?,
-                points: int_field(child, "pointProgressMax"),
-                complete: child["complete"].as_bool().unwrap_or(false),
+        .map(|card| {
+            let client = client.clone();
+            let cookie = cookie.clone();
+            let url = card.url.clone();
+            tauri::async_runtime::spawn(async move {
+                match url {
+                    Some(url) => get(&client, &cookie, &url).await.map(|(html, _)| html),
+                    None => Err(FetchError::Unexpected("quête sans adresse".into())),
+                }
             })
         })
         .collect();
-    Some(PunchCard {
-        points: int_field(parent, "pointProgressMax"),
-        done: children
-            .iter()
-            .filter(|c| c["complete"].as_bool() == Some(true))
-            .count(),
-        total: children.len(),
-        complete: parent["complete"].as_bool().unwrap_or(false),
+    for (card, page) in summary.punch_cards.iter_mut().zip(pages) {
+        match page.await {
+            Ok(Ok(html)) => {
+                card.steps = quest_steps(&html);
+                // Quête venue d'une bannière : sa progression se déduit des étapes.
+                if card.total == 0 && !card.steps.is_empty() {
+                    card.total = card.steps.len();
+                    card.done = card.steps.iter().filter(|s| s.complete).count();
+                    card.complete = card.done >= card.total;
+                }
+            }
+            Ok(Err(err)) => log::warn!("Quête {} illisible : {err}", card.id),
+            Err(err) => log::warn!("Lecture de la quête {} interrompue : {err}", card.id),
+        }
+    }
+    Ok(summary)
+}
+
+async fn get(
+    client: &reqwest::Client,
+    cookie: &str,
+    url: &str,
+) -> Result<(String, Url), FetchError> {
+    let response = client
+        .get(url)
+        .header("Cookie", cookie)
+        .header("Accept", "text/html")
+        .header("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.8")
+        .send()
+        .await
+        .map_err(|e| FetchError::Network(e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(FetchError::Unexpected(format!(
+            "{url} : statut HTTP {}",
+            response.status()
+        )));
+    }
+    let final_url = response.url().clone();
+    let html = response
+        .text()
+        .await
+        .map_err(|e| FetchError::Network(e.to_string()))?;
+    Ok((html, final_url))
+}
+
+/// Garde la dernière page lue pour diagnostiquer un changement de format côté Microsoft.
+fn save_diagnostic<R: Runtime>(app: &AppHandle<R>, name: &str, html: &str) {
+    if let Ok(dir) = app.path().app_log_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(format!("rewards-{name}.html")), html);
+    }
+}
+
+fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary, FetchError> {
+    let earn = flight::text(earn_html);
+    let dashboard = dashboard_html.map(flight::text).unwrap_or_default();
+
+    let available_points = first_int(&earn, "balance").ok_or(FetchError::NotLoggedIn)?;
+    let level = first_str(&dashboard, "memberTitle").or_else(|| first_str(&earn, "memberTitle"));
+    let level_progress = first_int(&dashboard, "pointsProgress");
+    let level_progress_max = level_progress
+        .zip(first_int(&dashboard, "pointsRemaining"))
+        .map(|(done, left)| done + left);
+
+    let (daily_set, daily_ids) = daily_set(&earn);
+    let mut more: Vec<Activity> = Vec::new();
+    for object in flight::objects_with_key(&earn, "offerId") {
+        let Some(activity) = activity(&object) else {
+            continue;
+        };
+        let id = activity.id.to_lowercase();
+        if daily_ids.contains(&activity.id)
+            || id.contains("pcparent")
+            || id.contains("pcchild")
+            || more.iter().any(|a| a.id == activity.id)
+        {
+            continue;
+        }
+        more.push(activity);
+    }
+
+    Ok(RewardsSummary {
+        fetched_at: Local::now(),
+        available_points,
+        level,
+        level_progress,
+        level_progress_max,
+        searches: searches(&earn),
+        daily_set,
+        more,
+        punch_cards: {
+            let mut cards = quest_cards(&earn);
+            add_banner_quests(&earn, &mut cards);
+            cards
+        },
+    })
+}
+
+/// Compteurs de recherche : `"pointsCounters":{"pc":{"max":15,"progress":9},…}`.
+fn searches(text: &str) -> Vec<Counter> {
+    let Some(Value::Object(counters)) = flight::values_after_key(text, "pointsCounters")
+        .into_iter()
+        .next()
+    else {
+        return Vec::new();
+    };
+    counters
+        .iter()
+        .filter_map(|(key, value)| {
+            let max = value.get("max")?.as_i64()?;
+            let label = match key.as_str() {
+                "pc" => "Recherches PC".to_string(),
+                "mobile" => "Recherches mobile".to_string(),
+                other => format!("Recherches ({other})"),
+            };
+            Some(Counter {
+                label,
+                progress: value.get("progress").and_then(Value::as_i64).unwrap_or(0),
+                max,
+            })
+        })
+        .collect()
+}
+
+/// Activités du jour : `"dailySetItems":[…]`, chaque élément portant sa date (MM/JJ/AAAA).
+/// Renvoie aussi les identifiants de toute la série, pour l'exclure des autres activités.
+fn daily_set(text: &str) -> (Vec<Activity>, HashSet<String>) {
+    let items: Vec<Map<String, Value>> = flight::values_after_key(text, "dailySetItems")
+        .into_iter()
+        .find_map(|v| match v {
+            Value::Array(items) => Some(items),
+            _ => None,
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| match v {
+            Value::Object(object) => Some(object),
+            _ => None,
+        })
+        .collect();
+    let today = Local::now().format("%m/%d/%Y").to_string();
+    let is_today =
+        |item: &Map<String, Value>| item.get("date").and_then(Value::as_str) == Some(&today);
+    // Le site peut dater la série selon un autre fuseau : sans élément du jour, on garde tout.
+    let keep_all = !items.iter().any(is_today);
+    let ids = items
+        .iter()
+        .filter_map(|item| item.get("offerId")?.as_str().map(str::to_string))
+        .collect();
+    let today_items = items
+        .iter()
+        .filter(|item| keep_all || is_today(item))
+        .filter_map(activity)
+        .collect();
+    (today_items, ids)
+}
+
+fn activity(object: &Map<String, Value>) -> Option<Activity> {
+    let title = object
+        .get("title")?
+        .as_str()
+        .filter(|t| !t.is_empty())?
+        .to_string();
+    let points = object.get("points").and_then(as_int).unwrap_or(0);
+    if points <= 0 {
+        return None;
+    }
+    let id = object
+        .get("offerId")
+        .and_then(Value::as_str)
+        .unwrap_or(&title)
+        .to_string();
+    let description = object
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    Some(Activity {
+        xbox: is_xbox(&[&title, &description, &id]),
+        complete: is_true(object, "isCompleted") || is_true(object, "complete"),
+        locked: is_true(object, "isLocked"),
+        url: object
+            .get("destination")
+            .and_then(Value::as_str)
+            .filter(|u| u.starts_with("https://"))
+            .map(str::to_string),
         id,
-        url,
         title,
         description,
-        xbox,
-        steps,
+        points,
     })
+}
+
+/// Ce qu'on retient d'une carte de quête en parcourant ses éléments.
+#[derive(Default)]
+struct CardInfo {
+    heading: Option<String>,
+    alt: Option<String>,
+    image_url: Option<String>,
+    tasks: Option<(usize, usize)>,
+    points: Option<i64>,
+    expires_at: Option<String>,
+}
+
+/// Cartes de quête de la page /earn : chaque carte est un lien `/earn/quest/<id>`.
+fn quest_cards(text: &str) -> Vec<PunchCard> {
+    let marker = format!("\"href\":\"{QUEST_PATH}");
+    let mut seen = HashSet::new();
+    let mut cards = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find(&marker) {
+        let at = from + found;
+        from = at + marker.len();
+        let Some(id_len) = text[from..].find('"') else {
+            break;
+        };
+        let id = &text[from..from + id_len];
+        if id.is_empty() || !seen.insert(id.to_string()) {
+            continue;
+        }
+        let Some(start) = text[..at].rfind('{') else {
+            continue;
+        };
+        let Some(Ok(props)) = serde_json::Deserializer::from_str(&text[start..])
+            .into_iter::<Value>()
+            .next()
+        else {
+            continue;
+        };
+        let mut info = CardInfo::default();
+        walk_card(&props, text, &mut info, &mut HashSet::new(), 0);
+
+        let title = info.heading.or(info.alt).unwrap_or_else(|| id.to_string());
+        let (done, total) = info.tasks.unwrap_or((0, 0));
+        cards.push(PunchCard {
+            xbox: is_xbox(&[&title, id]),
+            id: id.to_string(),
+            title,
+            description: String::new(),
+            image_url: info.image_url,
+            points: info.points.unwrap_or(0),
+            done,
+            total,
+            complete: total > 0 && done >= total,
+            expires_at: info.expires_at,
+            url: Some(quest_url(id)),
+            steps: Vec::new(),
+        });
+    }
+    cards
+}
+
+/// Certaines quêtes (Roblox, par exemple) ne sont présentes que sous forme de bannière dont le
+/// lien `destination` mène à la page de la quête. Ces bannières complètent aussi la
+/// description et l'image des quêtes déjà trouvées.
+fn add_banner_quests(text: &str, cards: &mut Vec<PunchCard>) {
+    for banner in flight::objects_with_key(text, "destination") {
+        let Some(destination) = banner.get("destination").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some((_, rest)) = destination.split_once(QUEST_PATH) else {
+            continue;
+        };
+        let id = rest.split(['?', '#', '/']).next().unwrap_or_default();
+        if id.is_empty() {
+            continue;
+        }
+        let text_field = |key: &str| {
+            banner
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty() && !s.starts_with('$'))
+                .map(str::to_string)
+        };
+        let description = text_field("description").unwrap_or_default();
+        let image_url = text_field("imageUrl").filter(|u| u.starts_with("https://"));
+        if let Some(card) = cards.iter_mut().find(|c| c.id == id) {
+            if card.description.is_empty() {
+                card.description = description;
+            }
+            if card.image_url.is_none() {
+                card.image_url = image_url;
+            }
+            continue;
+        }
+        let title = text_field("title").unwrap_or_else(|| id.to_string());
+        cards.push(PunchCard {
+            xbox: is_xbox(&[&title, &description, id]),
+            id: id.to_string(),
+            title,
+            description,
+            image_url,
+            points: 0,
+            done: 0,
+            total: 0,
+            complete: false,
+            expires_at: None,
+            url: Some(quest_url(id)),
+            steps: Vec::new(),
+        });
+    }
+}
+
+fn quest_url(id: &str) -> String {
+    let mut url = Url::parse(REWARDS_ORIGIN).unwrap();
+    url.path_segments_mut()
+        .unwrap()
+        .pop_if_empty()
+        .extend(["earn", "quest", id]);
+    url.to_string()
+}
+
+/// Parcourt les éléments React d'une carte, en suivant les références `$id` vers d'autres lignes.
+fn walk_card(
+    value: &Value,
+    text: &str,
+    info: &mut CardInfo,
+    visited: &mut HashSet<String>,
+    depth: usize,
+) {
+    if depth > 60 {
+        return;
+    }
+    match value {
+        Value::String(s) => {
+            if let Some(id) = s.strip_prefix("$L").or_else(|| s.strip_prefix('$')) {
+                let is_row = !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit());
+                if is_row && visited.insert(id.to_string()) {
+                    if let Some(row) = flight::row(text, id) {
+                        walk_card(&row, text, info, visited, depth + 1);
+                    }
+                }
+            } else if info.tasks.is_none() {
+                info.tasks = parse_tasks(s);
+            }
+        }
+        Value::Array(items) => {
+            // Élément React : ["$", "h3", clé, {"children": "Titre"}].
+            if items.len() == 4 && items[0] == "$" && items[1] == "h3" {
+                if let Some(title) = items[3].get("children").and_then(Value::as_str) {
+                    info.heading.get_or_insert_with(|| title.to_string());
+                }
+            }
+            // Points affichés en deux morceaux : ["+", "50"].
+            if items.len() == 2 && items[0] == "+" {
+                if let Some(points) = items[1].as_str().and_then(parse_points) {
+                    info.points.get_or_insert(points);
+                }
+            }
+            for item in items {
+                walk_card(item, text, info, visited, depth + 1);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(alt) = object.get("alt").and_then(Value::as_str) {
+                info.alt.get_or_insert_with(|| alt.to_string());
+            }
+            if let Some(src) = object
+                .get("src")
+                .and_then(Value::as_str)
+                .filter(|s| s.starts_with("https://"))
+            {
+                info.image_url.get_or_insert_with(|| src.to_string());
+            }
+            if let Some(date) = object
+                .get("expiresAt")
+                .and_then(Value::as_str)
+                .and_then(|d| d.strip_prefix("$D"))
+            {
+                info.expires_at.get_or_insert_with(|| date.to_string());
+            }
+            for item in object.values() {
+                walk_card(item, text, info, visited, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// « 1/4 tâches » → (1, 4).
+fn parse_tasks(text: &str) -> Option<(usize, usize)> {
+    let (done, rest) = text.split_once('/')?;
+    let total: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let after = &rest[total.len()..];
+    if done.is_empty() || !done.chars().all(|c| c.is_ascii_digit()) || total.is_empty() {
+        return None;
+    }
+    if !after.is_empty() && !after.starts_with(' ') {
+        return None;
+    }
+    Some((done.parse().ok()?, total.parse().ok()?))
+}
+
+/// « 1 500 », « 1,500 » ou « 95 » → nombre.
+fn parse_points(text: &str) -> Option<i64> {
+    let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+    let rest_is_separators = text
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, ',' | '.' | ' ' | '\u{a0}' | '\u{202f}'));
+    if digits.is_empty() || !rest_is_separators {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Étapes d'une quête, sur sa page : objets dont l'`offerId` contient `pcchild`.
+fn quest_steps(html: &str) -> Vec<Step> {
+    let text = flight::text(html);
+    let mut seen = HashSet::new();
+    flight::objects_with_key(&text, "offerId")
+        .into_iter()
+        .filter_map(|object| {
+            let id = object.get("offerId")?.as_str()?;
+            if !id.to_lowercase().contains("pcchild") || !seen.insert(id.to_string()) {
+                return None;
+            }
+            Some(Step {
+                title: object
+                    .get("title")?
+                    .as_str()
+                    .filter(|t| !t.is_empty())?
+                    .to_string(),
+                points: object
+                    .get("points")
+                    .or_else(|| object.get("pointProgressMax"))
+                    .and_then(as_int)
+                    .unwrap_or(0),
+                complete: is_true(&object, "isCompleted") || is_true(&object, "complete"),
+            })
+        })
+        .collect()
+}
+
+fn first_int(text: &str, key: &str) -> Option<i64> {
+    flight::values_after_key(text, key).iter().find_map(as_int)
+}
+
+fn first_str(text: &str, key: &str) -> Option<String> {
+    flight::values_after_key(text, key)
+        .iter()
+        .find_map(|v| v.as_str().filter(|s| !s.is_empty() && !s.starts_with('$')))
+        .map(str::to_string)
+}
+
+fn is_true(object: &Map<String, Value>, key: &str) -> bool {
+    object.get(key).and_then(Value::as_bool) == Some(true)
 }
 
 fn is_xbox(texts: &[&str]) -> bool {
@@ -339,10 +638,6 @@ fn is_xbox(texts: &[&str]) -> bool {
     })
 }
 
-fn str_field(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(str::to_string)
-}
-
 fn as_int(value: &Value) -> Option<i64> {
     value
         .as_i64()
@@ -350,81 +645,135 @@ fn as_int(value: &Value) -> Option<i64> {
         .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
 
-fn int_field(value: &Value, key: &str) -> i64 {
-    value.get(key).and_then(as_int).unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+
+    /// Emballe des lignes du flux Next.js dans une page HTML, comme le fait le site.
+    fn page(rows: &str) -> String {
+        format!(
+            "<html><script>self.__next_f.push([1,{}])</script></html>",
+            serde_json::to_string(rows).unwrap()
+        )
+    }
+
+    /// Extrait réduit et anonymisé de la vraie page /earn (novembre 2026).
+    fn earn_rows() -> String {
+        let today = Local::now().format("%m/%d/%Y");
+        format!(
+            r#"5:{{"balance":3345,"level":1}}
+6:{{"memberTitle":"Membre"}}
+7:{{"pointsCounters":{{"dailyOffer":101,"pc":{{"max":15,"progress":9,"originalMax":15}},"totalPoints":110,"boostActivated":false}}}}
+8:{{"dailySetItems":[{{"date":"{today}","description":"Rock, pop","destination":"https://www.bing.com/search?q=concerts","isCompleted":false,"isLocked":"$undefined","offerId":"Global_DailySet_Child1","points":10,"title":"Événements musicaux"}},{{"date":"{today}","isCompleted":true,"offerId":"Global_DailySet_Child2","points":10,"title":"Perth"}},{{"date":"01/01/2020","isCompleted":false,"offerId":"Old","points":10,"title":"Ancienne"}}]}}
+9:[{{"offerId":"WW_Rewards_locked_level2_offer1","title":"À la découverte de Mars","points":15,"isCompleted":false,"isLocked":true,"destination":"https://rewards.bing.com/level"}},{{"offerId":"WW_banner","title":"Bannière","points":0,"isCompleted":false}},{{"offerId":"Xbox_offer","title":"Jouez sur Xbox","points":20,"isCompleted":false,"destination":"https://www.xbox.com"}},{{"offerId":"Global_DailySet_Child1","title":"Événements musicaux","points":10}}]
+10:[{{"destination":"https://rewards.bing.com/earn/quest/WW_pcparent_Roblox_Soundwave_HP_punchcard?form=ML2Y1R","imageUrl":"https://bing.com/th?id=OMR.RobloxEx.png&pid=Rewards","isCompleted":false,"name":"WW_Rewards_Campaign_Roblox_Awareness","points":0,"title":"Équipement d’avatar exclusif","description":"Offrez un nouveau look à votre avatar Roblox"}},{{"destination":"https://rewards.bing.com/earn/quest/WW_pcparent_FY27_Duolingo3M_punchcard?form=ML2Y43","points":0,"title":"Obtenez Super Duolingo","description":"Profitez de 2 mois gratuits"}}]
+80:["$","$L3f",null,{{"src":"https://bing.com/th?id=OMR.hero_superduolingo.png&pid=Rewards","alt":"Débloquez Super Duolingo","fill":true}}]
+82:["$","$L2b","1",{{"href":"/earn/quest/WW_pcparent_FY27_Duolingo3M_punchcard","instrument":{{"data":{{"offerId":"WW_pcparent_FY27_Duolingo3M_punchcard"}}}},"children":["$","div",null,{{"children":["$80",["$","span",null,{{"children":["$","$L90",null,{{"expiresAt":"$D2026-12-04T08:00:00.000Z","prefix":"Date d’expiration"}}]}}],["$","div",null,{{"children":"0/6 tâches"}}]]}}]}}]
+83:["$","$L2b","2",{{"href":"/earn/quest/WW_evergreen_pcparent_SeaofThieves_CeruleanSheenCutlass_punchcard","children":["$","div",null,{{"children":[["$","$L3f",null,{{"src":"https://bing.com/th?id=OMR.SoT_1200x675.jpg&pid=Rewards","alt":"Sea of Thieves - Sabre"}}],["$","h3",null,{{"className":"text-globalBody2Strong","children":"Sea of Thieves - Sabre à éclat céruléen"}}],["$","div",null,{{"children":["+","50"]}}],["$","div",null,{{"children":"1/4 tâches"}}]]}}]}}]
+"#
+        )
+    }
 
     #[test]
-    fn parses_minimal_dashboard() {
-        let today = Local::now().format("%m/%d/%Y").to_string();
-        let json = json!({
-            "dashboard": {
-                "userStatus": {
-                    "availablePoints": 12345,
-                    "lifetimePoints": 50000,
-                    "isRewardsUser": true,
-                    "levelInfo": { "activeLevel": "Level2", "progress": 600, "progressMax": 500 },
-                    "counters": {
-                        "pcSearch": [
-                            { "pointProgress": 30, "pointProgressMax": 90 },
-                            { "pointProgress": 0, "pointProgressMax": 12 }
-                        ]
-                    }
-                },
-                "dailySetPromotions": {
-                    today: [
-                        { "offerId": "a", "title": "Quiz du jour", "pointProgressMax": 10, "complete": true },
-                        { "offerId": "b", "title": "Sondage", "pointProgressMax": 10, "complete": false }
-                    ]
-                },
-                "morePromotions": [
-                    { "offerId": "x", "title": "Jouez sur Xbox", "pointProgressMax": 50, "complete": false },
-                    { "offerId": "z", "title": "Sans points", "pointProgressMax": 0 }
-                ],
-                "punchCards": [{
-                    "parentPromotion": {
-                        "name": "WW_evergreen_pcparent_SeaofThieves_CeruleanSheenCutlass_punchcard",
-                        "title": "Sabre Cerulean Sheen",
-                        "pointProgressMax": 100
-                    },
-                    "childPromotions": [
-                        { "title": "Jouez 15 min", "pointProgressMax": 0, "complete": true },
-                        { "title": "Jouez encore", "complete": false }
-                    ]
-                }]
-            }
-        });
-        let s = parse_dashboard(&json).unwrap();
-        assert_eq!(s.available_points, 12345);
-        assert_eq!(s.level.as_deref(), Some("Level2"));
-        assert_eq!(s.search_points_left(), 72);
-        assert_eq!(s.daily_set.len(), 2);
-        assert_eq!(s.daily_set_left(), 1);
-        assert_eq!(s.more.len(), 1);
-        assert!(s.more[0].xbox);
-        let card = &s.punch_cards[0];
-        assert_eq!((card.done, card.total, card.steps.len()), (1, 2, 2));
+    fn parses_earn_and_dashboard_pages() {
+        let dashboard = page(
+            r#"3:{"memberTitle":"Membre","pointsProgress":143,"pointsRemaining":357,"targetLevel":2}"#,
+        );
+        let s = parse(&page(&earn_rows()), Some(&dashboard)).unwrap();
+        assert_eq!(s.available_points, 3345);
+        assert_eq!(s.level.as_deref(), Some("Membre"));
         assert_eq!(
-            card.url.as_deref(),
+            (s.level_progress, s.level_progress_max),
+            (Some(143), Some(500))
+        );
+
+        assert_eq!(s.searches.len(), 1);
+        assert_eq!(s.searches[0].label, "Recherches PC");
+        assert_eq!(s.search_points_left(), 6);
+
+        let daily: Vec<_> = s.daily_set.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(daily, ["Global_DailySet_Child1", "Global_DailySet_Child2"]);
+        assert_eq!(s.daily_set_left(), 1);
+        assert_eq!(
+            s.daily_set[0].url.as_deref(),
+            Some("https://www.bing.com/search?q=concerts")
+        );
+
+        let more: Vec<_> = s.more.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(more, ["WW_Rewards_locked_level2_offer1", "Xbox_offer"]);
+        assert!(s.more[0].locked);
+        assert!(s.more[1].xbox);
+    }
+
+    #[test]
+    fn parses_quest_cards_including_referenced_rows() {
+        let s = parse(&page(&earn_rows()), None).unwrap();
+        assert_eq!(s.punch_cards.len(), 3);
+
+        let duolingo = &s.punch_cards[0];
+        assert_eq!(duolingo.title, "Débloquez Super Duolingo");
+        assert_eq!(duolingo.description, "Profitez de 2 mois gratuits");
+        assert_eq!((duolingo.done, duolingo.total), (0, 6));
+        assert_eq!(
+            duolingo.expires_at.as_deref(),
+            Some("2026-12-04T08:00:00.000Z")
+        );
+        assert!(duolingo
+            .image_url
+            .as_deref()
+            .unwrap()
+            .contains("superduolingo"));
+
+        let sot = &s.punch_cards[1];
+        assert_eq!(sot.title, "Sea of Thieves - Sabre à éclat céruléen");
+        assert_eq!((sot.done, sot.total, sot.points), (1, 4, 50));
+        assert!(!sot.complete);
+        assert_eq!(
+            sot.url.as_deref(),
             Some("https://rewards.bing.com/earn/quest/WW_evergreen_pcparent_SeaofThieves_CeruleanSheenCutlass_punchcard")
+        );
+
+        // Quête présente seulement dans une bannière, sans les paramètres de suivi du lien.
+        let roblox = &s.punch_cards[2];
+        assert_eq!(roblox.id, "WW_pcparent_Roblox_Soundwave_HP_punchcard");
+        assert_eq!(roblox.title, "Équipement d’avatar exclusif");
+        assert!(roblox.description.contains("Roblox"));
+        assert_eq!(
+            roblox.url.as_deref(),
+            Some("https://rewards.bing.com/earn/quest/WW_pcparent_Roblox_Soundwave_HP_punchcard")
         );
     }
 
     #[test]
-    fn html_or_missing_dashboard_means_logged_out() {
+    fn parses_quest_steps() {
+        let html = page(
+            r#"4:[{"offerId":"WW_pcparent_SoT_punchcard","title":"Parent"},{"offerId":"WW_pcchild_SoT_1","title":"Jouez 15 minutes","points":0,"isCompleted":true},{"offerId":"WW_pcchild_SoT_2","title":"Revenez demain","points":25,"isCompleted":false},{"offerId":"WW_pcchild_SoT_1","title":"Jouez 15 minutes"}]"#,
+        );
+        let steps = quest_steps(&html);
+        assert_eq!(steps.len(), 2);
+        assert!(steps[0].complete);
+        assert_eq!(
+            (steps[1].title.as_str(), steps[1].points),
+            ("Revenez demain", 25)
+        );
+    }
+
+    #[test]
+    fn page_without_balance_means_logged_out() {
         assert!(matches!(
-            parse_dashboard(&json!({})),
+            parse("<html>Se connecter</html>", None),
             Err(FetchError::NotLoggedIn)
         ));
-        let json = json!({ "dashboard": { "userStatus": { "isRewardsUser": false } } });
-        assert!(matches!(
-            parse_dashboard(&json),
-            Err(FetchError::NotLoggedIn)
-        ));
+    }
+
+    #[test]
+    fn reads_task_counts_and_points() {
+        assert_eq!(parse_tasks("1/4 tâches"), Some((1, 4)));
+        assert_eq!(parse_tasks("0/6 tasks"), Some((0, 6)));
+        assert_eq!(parse_tasks("12/31/2026"), None);
+        assert_eq!(parse_tasks("https://x/y"), None);
+        assert_eq!(parse_points("1\u{202f}500"), Some(1500));
+        assert_eq!(parse_points("95"), Some(95));
+        assert_eq!(parse_points("abc"), None);
     }
 }

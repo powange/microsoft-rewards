@@ -84,9 +84,8 @@ function renderSummary(summary) {
   state.summary = summary;
   $("points").textContent = numberFormat.format(summary.availablePoints);
   const level = [];
-  if (summary.level) level.push(`Niveau : ${summary.level.replace(/^Level/i, "")}`);
-  if (summary.levelProgressMax) level.push(`${numberFormat.format(summary.levelProgress ?? 0)} / ${numberFormat.format(summary.levelProgressMax)} points ce mois-ci`);
-  level.push(`${numberFormat.format(summary.lifetimePoints)} points gagnés au total`);
+  if (summary.level) level.push(`Niveau : ${summary.level}`);
+  if (summary.levelProgressMax) level.push(`${numberFormat.format(summary.levelProgress ?? 0)} / ${numberFormat.format(summary.levelProgressMax)} points vers le niveau suivant`);
   $("level").textContent = level.join(" · ");
   $("fetched-at").textContent = `Actualisé à ${timeFormat.format(new Date(summary.fetchedAt))}`;
   $("fetch-error").hidden = true;
@@ -113,14 +112,7 @@ function renderSummary(summary) {
 
   const cards = summary.punchCards;
   $("punch-panel").hidden = cards.length === 0;
-  $("punch-cards").replaceChildren(...cards.map((card) => h("li", { class: card.complete ? "done" : "" },
-    h("span", { class: `state${card.complete ? " done" : ""}` }),
-    h("div", {},
-      h("div", { class: "title" },
-        card.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(card.url); } }, card.title) : card.title,
-        " ", card.xbox ? h("span", { class: "tag" }, "Xbox") : null),
-      h("div", { class: "desc" }, `${card.done} / ${card.total} étapes`)),
-    h("span", { class: "pts" }, card.points ? `${card.points} pts` : ""))));
+  $("punch-cards").replaceChildren(...cards.map(questItem));
 
   renderGames();
 }
@@ -224,17 +216,24 @@ function matches(query, ...texts) {
   return !q || texts.some((t) => normalize(t).includes(q));
 }
 
+const expiryFormat = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long" });
+
 function questItem(card) {
   const steps = card.steps.length
     ? h("ul", { class: "steps" }, card.steps.map((s) => h("li", { class: s.complete ? "done" : "" },
         s.complete ? "✓" : "○", ` ${s.title}`, s.points ? ` · ${s.points} pts` : "")))
     : null;
+  const meta = [];
+  if (card.total) meta.push(`${card.done} / ${card.total} tâches`);
+  if (card.expiresAt) meta.push(`expire le ${expiryFormat.format(new Date(card.expiresAt))}`);
   return h("li", { class: card.complete ? "done" : "" },
     h("span", { class: `state${card.complete ? " done" : ""}` }),
     h("div", {},
       h("div", { class: "title" },
-        card.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(card.url); } }, card.title) : card.title),
-      h("div", { class: "desc" }, card.total ? `${card.done} / ${card.total} étapes` : card.description),
+        card.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(card.url); } }, card.title) : card.title,
+        " ", card.xbox ? h("span", { class: "tag" }, "Xbox") : null),
+      meta.length ? h("div", { class: "desc" }, meta.join(" · ")) : null,
+      card.description ? h("div", { class: "desc" }, card.description) : null,
       steps),
     h("span", { class: "pts" }, card.points ? `${card.points} pts` : ""));
 }

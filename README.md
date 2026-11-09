@@ -16,7 +16,7 @@ Le mode **Automatique** (lancement des jeux installés) n'est pas encore disponi
 
 ## Limites connues
 
-- Les points et activités viennent de l'API interne de rewards.bing.com (`/api/getuserinfo`), non documentée. Si Microsoft la change, l'affichage cassera : la dernière réponse brute est enregistrée dans le dossier des journaux (Paramètres › Ouvrir le dossier des journaux) pour diagnostiquer.
+- Les points, activités et quêtes sont lus dans les données intégrées aux pages rewards.bing.com/earn et /dashboard (format Next.js non documenté). Si Microsoft change ces pages, l'affichage cassera : les dernières pages lues sont enregistrées dans le dossier des journaux (Paramètres › Ouvrir le dossier des journaux) pour diagnostiquer.
 - Le catalogue d'échange est lu dans les données intégrées à la page rewards.bing.com/redeem/shop (dernière page enregistrée dans le dossier des journaux). Une refonte du site peut le casser.
 - L'avancement des quêtes Xbox n'est pas publié par Microsoft : le suivi Xbox est déclaratif, et les points se réclament dans le Rewards Hub de l'app Xbox.
 
@@ -42,7 +42,8 @@ Structure :
 | Chemin | Rôle |
 |---|---|
 | `src-tauri/src/lib.rs` | Démarrage, plugins, commandes appelées par l'interface |
-| `src-tauri/src/rewards.rs` | Lecture et analyse du tableau de bord Rewards |
+| `src-tauri/src/rewards.rs` | Lecture du tableau de bord Rewards (points, activités, quêtes) |
+| `src-tauri/src/flight.rs` | Extraction des données intégrées aux pages Next.js du site Rewards |
 | `src-tauri/src/catalog.rs` | Catalogue d'échange, lu dans la page rewards.bing.com/redeem/shop |
 | `src-tauri/src/auth.rs` | Fenêtre de connexion Microsoft, déconnexion |
 | `src-tauri/src/store.rs` | Réglages et historique Xbox (`state.json`) |
