@@ -86,6 +86,13 @@ async fn todo_lines<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Vec<
                         1 => lines.push("Bing : 1 activité du jour à faire".into()),
                         n => lines.push(format!("Bing : {n} activités du jour à faire")),
                     }
+                    match summary.searches_to_do() {
+                        0 => {}
+                        1 => lines.push("Bing : 1 recherche à faire (activité ou quête)".into()),
+                        n => {
+                            lines.push(format!("Bing : {n} recherches à faire (activités, quêtes)"))
+                        }
+                    }
                 }
                 if settings.remind_streaks {
                     // Un jour manqué remet la série à zéro : c'est le rappel le plus utile.

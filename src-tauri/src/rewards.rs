@@ -55,6 +55,30 @@ pub struct Activity {
     pub note: Option<String>,
     /// Activité liée à Xbox ou au Game Pass, mise en avant dans l'interface.
     pub xbox: bool,
+    /// Nature de la tâche (recherche Bing, quiz…), déduite de son lien et de son texte.
+    pub kind: Option<TaskKind>,
+}
+
+/// Ce que demande une tâche, pour la signaler dans l'interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TaskKind {
+    /// Le lien ouvre une recherche Bing toute faite : le clic suffit.
+    Search,
+    /// Il faut faire soi-même une ou plusieurs recherches sur Bing.
+    SearchManual,
+    /// Quiz à jouer sur Bing.
+    Quiz,
+    /// Puzzle d'images Bing.
+    Puzzle,
+    /// Site partenaire (Duolingo, YouTube…).
+    Partner,
+}
+
+impl TaskKind {
+    pub fn is_search(self) -> bool {
+        matches!(self, TaskKind::Search | TaskKind::SearchManual)
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +112,7 @@ pub struct Step {
     /// Texte et lien du bouton de l'étape (« Commencez à rechercher »…).
     pub link_text: Option<String>,
     pub url: Option<String>,
+    pub kind: Option<TaskKind>,
 }
 
 /// Contenu de la page d'une quête.
@@ -126,6 +151,36 @@ impl RewardsSummary {
             .iter()
             .map(|c| (c.max - c.progress).max(0))
             .sum()
+    }
+
+    /// Recherches Bing encore à faire dans les activités et les étapes de quêtes.
+    pub fn searches_to_do(&self) -> usize {
+        let activities = self
+            .daily_set
+            .iter()
+            .chain(&self.more)
+            .filter(|a| !a.complete && !a.locked && a.kind.is_some_and(TaskKind::is_search))
+            .count();
+        let steps = self
+            .punch_cards
+            .iter()
+            .flat_map(|c| &c.steps)
+            .filter(|s| !s.complete && !s.locked && s.kind.is_some_and(TaskKind::is_search))
+            .count();
+        activities + steps
+    }
+
+    /// Classe chaque activité et chaque étape de quête d'après son lien et son texte.
+    fn classify_tasks(&mut self) {
+        for a in self.daily_set.iter_mut().chain(self.more.iter_mut()) {
+            a.kind = task_kind(a.url.as_deref(), &[&a.title, &a.description]);
+        }
+        for card in &mut self.punch_cards {
+            for s in &mut card.steps {
+                let link = s.link_text.as_deref().unwrap_or_default();
+                s.kind = task_kind(s.url.as_deref(), &[&s.title, &s.description, link]);
+            }
+        }
     }
 
     pub fn daily_set_left(&self) -> usize {
@@ -260,6 +315,7 @@ pub async fn fetch<R: Runtime>(
             Err(err) => log::warn!("Lecture de la quête {} interrompue : {err}", card.id),
         }
     }
+    summary.classify_tasks();
     Ok(summary)
 }
 
@@ -337,7 +393,7 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
         more.push(activity);
     }
 
-    Ok(RewardsSummary {
+    let mut summary = RewardsSummary {
         fetched_at: Local::now(),
         account_name: account_name(&earn),
         available_points,
@@ -354,7 +410,9 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
             cards
         },
         streaks: streaks::parse(&earn),
-    })
+    };
+    summary.classify_tasks();
+    Ok(summary)
 }
 
 /// Nom du compte : composant d'en-tête `{"name":"…","profilePictureUrl":"…"}`.
@@ -506,6 +564,7 @@ fn activity_with(object: &Map<String, Value>, allow_zero: bool) -> Option<Activi
             .filter(|u| u.starts_with("https://"))
             .map(str::to_string),
         note: None,
+        kind: None,
         id,
         title,
         description,
@@ -567,6 +626,7 @@ fn card_activity(object: &Map<String, Value>, text: &str) -> Option<Activity> {
             .map(str::to_string),
         image_url,
         note,
+        kind: None,
         id,
         title,
         description,
@@ -912,6 +972,7 @@ fn quest_step(icon: &Value, content: &Value, text: &str) -> Option<Step> {
             .and_then(Value::as_str)
             .map(str::to_string),
         url,
+        kind: None,
     })
 }
 
@@ -974,6 +1035,78 @@ fn is_xbox(texts: &[&str]) -> bool {
         let t = t.to_lowercase();
         t.contains("xbox") || t.contains("game pass") || t.contains("gamepass")
     })
+}
+
+/// Nature d'une tâche d'après son lien de destination, puis son texte.
+///
+/// - `bing.com/search?q=…` : recherche toute faite, ou quiz quand la requête en est un ;
+/// - accueil de Bing (« Explorer sur Bing », « Commencez à rechercher ») : recherche à faire soi-même ;
+/// - `bing.com/spotlight/imagepuzzle` : puzzle ;
+/// - autre site que Microsoft : partenaire ;
+/// - sans lien parlant, un texte qui parle de recherche (« Rechercher avec Bing pendant
+///   7 jours », « Effectuez une recherche visuelle ») : recherche à faire soi-même.
+fn task_kind(url: Option<&str>, texts: &[&str]) -> Option<TaskKind> {
+    let url = url.and_then(|u| Url::parse(u).ok());
+    let host = url
+        .as_ref()
+        .and_then(|u| u.host_str())
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    let mentions_search = || {
+        texts.iter().any(|t| {
+            let t = t.to_lowercase();
+            t.contains("recherch") || t.contains("search")
+        })
+    };
+    match (&url, host.as_str()) {
+        (Some(url), "bing.com" | "www.bing.com") => {
+            let path = url.path().trim_end_matches('/');
+            if path == "/search" {
+                let query = url
+                    .query_pairs()
+                    .find(|(k, _)| k == "q")
+                    .map(|(_, v)| v.to_lowercase())
+                    .unwrap_or_default();
+                let raw = url.query().unwrap_or_default().to_lowercase();
+                let quiz = query.contains("quiz")
+                    || raw.contains("wqoskey")
+                    || raw.contains("form=dsetqu");
+                Some(if quiz {
+                    TaskKind::Quiz
+                } else {
+                    TaskKind::Search
+                })
+            } else if path.starts_with("/spotlight/imagepuzzle") {
+                Some(TaskKind::Puzzle)
+            } else if path.is_empty() {
+                Some(TaskKind::SearchManual)
+            } else {
+                None
+            }
+        }
+        (None, _) => mentions_search().then_some(TaskKind::SearchManual),
+        (Some(url), _) if url.scheme() == "microsoft-edge" => {
+            mentions_search().then_some(TaskKind::SearchManual)
+        }
+        (Some(_), host) => {
+            let microsoft = [
+                "bing.com",
+                "microsoft.com",
+                "xbox.com",
+                "aka.ms",
+                "live.com",
+                "msn.com",
+                "office.com",
+                "skype.com",
+                "windows.com",
+                "microsoftedge.com",
+            ];
+            let ours = microsoft
+                .iter()
+                .any(|d| host == *d || host.ends_with(&format!(".{d}")));
+            (!ours && !host.is_empty()).then_some(TaskKind::Partner)
+        }
+    }
 }
 
 fn as_int(value: &Value) -> Option<i64> {
@@ -1179,5 +1312,52 @@ c:{{"UnlockCriteria":{{"newLevel2":"Niveau Argent requis","tomorrow":"Déverroui
         assert_eq!(parse_points("1\u{202f}500"), Some(1500));
         assert_eq!(parse_points("95"), Some(95));
         assert_eq!(parse_points("abc"), None);
+    }
+
+    #[test]
+    fn classe_les_taches_d_apres_leur_lien() {
+        use TaskKind::*;
+        let kind = |url: &str| task_kind(Some(url), &["Titre"]);
+        assert_eq!(
+            kind("https://www.bing.com/search?q=Narval&form=ML2Y2H&rnoreward=1"),
+            Some(Search)
+        );
+        assert_eq!(
+            kind("https://www.bing.com/search?q=Bing%20Homepage%20quiz&form=ML2BF1"),
+            Some(Quiz)
+        );
+        assert_eq!(
+            kind("https://www.bing.com/search?q=Slumdog&form=dsetqu&filters=WQOskey:%22x%22"),
+            Some(Quiz)
+        );
+        assert_eq!(
+            kind("https://www.bing.com/spotlight/imagepuzzle?form=ML2BF0"),
+            Some(Puzzle)
+        );
+        assert_eq!(kind("https://www.bing.com?form=ML2X8X"), Some(SearchManual));
+        assert_eq!(
+            kind("https://www.bing.com/?form=ML2PCR&rwAutoFlyout=exb"),
+            Some(SearchManual)
+        );
+        assert_eq!(kind("https://duolingo.com/math?form=ML2Y3R"), Some(Partner));
+        assert_eq!(kind("https://www.youtube.com/watch?v=x"), Some(Partner));
+        assert_eq!(
+            kind("https://rewards.bing.com/earn/quest/WW_x_punchcard"),
+            None
+        );
+        assert_eq!(kind("https://www.xbox.com/xbox-game-pass"), None);
+        assert_eq!(kind("https://www.bing.com/apps/wallpaper?pc=w422"), None);
+    }
+
+    #[test]
+    fn classe_les_taches_sans_lien_d_apres_leur_texte() {
+        assert_eq!(
+            task_kind(
+                None,
+                &["Rechercher avec Bing pendant 7 jours dans une ligne"]
+            ),
+            Some(TaskKind::SearchManual)
+        );
+        assert_eq!(task_kind(None, &["Parrainez vos amis"]), None);
     }
 }

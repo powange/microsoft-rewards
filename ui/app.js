@@ -73,6 +73,8 @@ function openUrl(url) {
 /** Délai avant l'actualisation qui suit une page ouverte dans la fenêtre Rewards. */
 const TASK_REFRESH_DELAY_MS = 10_000;
 const EARN_URL = "https://rewards.bing.com/earn";
+/** Les recherches libres se font dans la fenêtre connectée au compte, pour être comptées. */
+const BING_URL = "https://www.bing.com/";
 let taskRefreshTimer;
 
 /**
@@ -99,6 +101,22 @@ function withThumb(imageUrl, ...children) {
     : text;
 }
 
+/** Badge de la nature d'une tâche (recherche Bing, quiz…), avec une explication au survol. */
+const KIND_TAGS = {
+  search: ["🔍 Recherche Bing", "Ouvrir la tâche lance la recherche sur Bing : le clic suffit."],
+  searchManual: ["🔍 Recherche à faire", "Il faut faire soi-même une ou plusieurs recherches sur Bing."],
+  quiz: ["❓ Quiz", "Quiz à jouer sur Bing : répondez aux questions."],
+  puzzle: ["🧩 Puzzle", "Puzzle d'images à terminer sur Bing."],
+  partner: ["Site partenaire", "La tâche se fait sur le site d'un partenaire."],
+};
+
+function kindTag(kind) {
+  const tag = KIND_TAGS[kind];
+  return tag ? h("span", { class: `tag kind-${kind}`, title: tag[1] }, tag[0]) : null;
+}
+
+const isSearch = (kind) => kind === "search" || kind === "searchManual";
+
 function activityItem(activity) {
   const title = activity.url
     ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(EARN_URL); } }, activity.title)
@@ -107,7 +125,8 @@ function activityItem(activity) {
     h("span", { class: `state${activity.complete ? " done" : ""}`, "aria-label": activity.complete ? "Terminé" : "À faire" }),
     withThumb(activity.imageUrl,
       h("div", { class: "title" }, title, " ",
-        activity.xbox ? h("span", { class: "tag" }, "Xbox") : null,
+        activity.xbox ? h("span", { class: "tag" }, "Xbox") : null, " ",
+        kindTag(activity.kind), " ",
         activity.locked ? h("span", { class: "tag lock" }, "Verrouillé") : null),
       activity.description ? h("div", { class: "desc" }, activity.description) : null,
       activity.note ? h("div", { class: "desc" }, activity.note) : null),
@@ -163,6 +182,8 @@ function renderSummary(summary) {
     : [h("li", { class: "empty" }, "Aucune activité pour le moment.")]));
   $("more-done").textContent = todo.length || !done.length ? "" : "Toutes les activités de cette section sont terminées.";
 
+  renderSearchesToDo(summary);
+
   const cards = summary.punchCards;
   $("punch-panel").hidden = cards.length === 0;
   $("punch-cards").replaceChildren(...cards.map((card) => questItem(card)));
@@ -170,6 +191,52 @@ function renderSummary(summary) {
   renderStreaks(summary.streaks);
   renderGames();
   renderFollowed();
+}
+
+/**
+ * « Recherches à faire aujourd'hui » : activités et étapes de quêtes non verrouillées qui
+ * demandent une recherche Bing, celles où le clic suffit d'abord, plus les points de
+ * recherche quotidiens restants.
+ */
+function renderSearchesToDo(summary) {
+  const pending = (t) => !t.complete && !t.locked && isSearch(t.kind);
+  const tasks = [
+    ...[...summary.dailySet, ...summary.more].filter(pending).map((a) => ({
+      kind: a.kind, title: a.title, context: a.description, points: a.points, imageUrl: a.imageUrl, url: EARN_URL,
+    })),
+    ...summary.punchCards.flatMap((card) => card.steps.filter(pending).map((step) => ({
+      kind: step.kind, title: step.title, context: `Quête : ${card.title}`, points: 0, imageUrl: card.imageUrl, url: card.url ?? step.url,
+    }))),
+  ];
+  tasks.sort((a, b) => Number(a.kind !== "search") - Number(b.kind !== "search") || b.points - a.points);
+  const left = summary.searches.reduce((sum, c) => sum + Math.max(0, c.max - c.progress), 0);
+
+  const info = [];
+  if (tasks.length) info.push(`${tasks.length} tâche${tasks.length > 1 ? "s" : ""}`);
+  if (left) info.push(`${left} pts de recherche quotidiens restants`);
+  $("bing-todo-info").textContent = info.join(" · ");
+
+  const items = tasks.map((t) => h("li", {},
+    h("span", { class: "state", "aria-label": "À faire" }),
+    withThumb(t.imageUrl,
+      h("div", { class: "title" },
+        t.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(t.url); } }, t.title) : t.title,
+        " ", kindTag(t.kind)),
+      t.context ? h("div", { class: "desc" }, t.context) : null),
+    h("span", { class: "pts" }, t.points ? `${t.points} pts` : "")));
+  if (left) {
+    items.push(h("li", {},
+      h("span", { class: "state", "aria-label": "À faire" }),
+      h("div", { class: "item-text" },
+        h("div", { class: "title" },
+          h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(BING_URL); } }, "Recherches libres sur Bing"),
+          " ", kindTag("searchManual")),
+        h("div", { class: "desc" }, summary.searches.filter((c) => c.max > c.progress)
+          .map((c) => `${c.label} : ${c.progress} / ${c.max} pts`).join(" · "))),
+      h("span", { class: "pts" }, `${left} pts`)));
+  }
+  $("bing-todo").replaceChildren(...(items.length ? items
+    : [h("li", { class: "empty" }, "Toutes les recherches Bing du jour sont faites ✓")]));
 }
 
 /** « dans 2 h 15 min » jusqu'à une date ISO. */
@@ -504,7 +571,7 @@ function stepItem(step, card) {
   return h("li", { class: step.complete ? "done" : step.locked ? "locked" : "" },
     icon,
     h("div", {},
-      h("div", { class: "step-title" }, step.title),
+      h("div", { class: "step-title" }, step.title, " ", kindTag(step.kind)),
       step.description ? h("div", { class: "desc" }, step.description) : null,
       button));
 }

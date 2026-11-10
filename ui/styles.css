@@ -38,6 +38,11 @@
     color-scheme: dark;
   }
 }
+@media (prefers-color-scheme: dark) {
+  .tag.kind-search, .tag.kind-searchManual { background: #14304d; color: #9cc9ff; }
+  .tag.kind-quiz { background: #2f1d47; color: #d3b4ff; }
+  .tag.kind-puzzle { background: #3b2a0c; color: #ffcf7a; }
+}
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -115,6 +120,11 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .state.done::after { content: ""; width: 8px; height: 4px; border: 2px solid var(--accent-fg); border-top: 0; border-right: 0; transform: rotate(-45deg) translate(1px, -1px); }
 .tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); vertical-align: 1px; }
 .tag.lock { background: var(--line); color: var(--muted); }
+.tag.kind-search, .tag.kind-searchManual { background: #e3f0ff; color: #0b5cad; }
+.tag.kind-quiz { background: #f3e8ff; color: #6b2fb3; }
+.tag.kind-puzzle { background: #fff1d6; color: #8a5300; }
+.tag.kind-partner { background: var(--line); color: var(--muted); }
+.tag[title] { cursor: help; }
 
 .xbox { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 20px; margin-bottom: 10px; }
 @media (max-width: 860px) { .xbox { grid-template-columns: 1fr; } }
