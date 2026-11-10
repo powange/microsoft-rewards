@@ -182,9 +182,12 @@ fn follow_quest(
     id: String,
     title: String,
     url: Option<String>,
+    image_url: Option<String>,
     follow: bool,
 ) -> Vec<FollowedQuest> {
-    state.store.set_followed(&id, &title, url, follow)
+    state
+        .store
+        .set_followed(&id, &title, url, image_url, follow)
 }
 
 #[tauri::command]

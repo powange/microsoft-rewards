@@ -108,6 +108,8 @@ pub struct FollowedQuest {
     pub id: String,
     pub title: String,
     pub url: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<String>,
     pub followed_on: NaiveDate,
 }
 
@@ -200,6 +202,7 @@ impl Store {
         id: &str,
         title: &str,
         url: Option<String>,
+        image_url: Option<String>,
         follow: bool,
     ) -> Vec<FollowedQuest> {
         let mut data = self.data.lock().unwrap();
@@ -209,6 +212,7 @@ impl Store {
                 id: id.to_string(),
                 title: title.to_string(),
                 url,
+                image_url,
                 followed_on: Local::now().date_naive(),
             });
         }
@@ -287,10 +291,10 @@ mod tests {
             std::env::temp_dir().join(format!("rewards-autoplay-test-{}.json", std::process::id()));
         let store = Store::load(path.clone());
         let url = Some("https://rewards.bing.com/earn/quest/sot".to_string());
-        store.set_followed("sot", "Sea of Thieves", url.clone(), true);
-        store.set_followed("duo", "Duolingo", None, true);
+        store.set_followed("sot", "Sea of Thieves", url.clone(), None, true);
+        store.set_followed("duo", "Duolingo", None, None, true);
         // Suivre à nouveau ne crée pas de doublon.
-        let followed = store.set_followed("sot", "Sea of Thieves", url, true);
+        let followed = store.set_followed("sot", "Sea of Thieves", url, None, true);
         assert_eq!(followed.len(), 2);
 
         let reloaded = store.reload();
@@ -302,7 +306,9 @@ mod tests {
         assert_eq!(ids, ["duo", "sot"]);
 
         assert_eq!(
-            reloaded.set_followed("duo", "Duolingo", None, false).len(),
+            reloaded
+                .set_followed("duo", "Duolingo", None, None, false)
+                .len(),
             1
         );
         let _ = std::fs::remove_file(path);

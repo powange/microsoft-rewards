@@ -183,6 +183,10 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .inline-field { display: flex; align-items: center; gap: 8px; }
 .inline-field input { width: 90px; }
 
+.side-refresh { width: 100%; margin-bottom: 6px; }
+.item-head { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 12px; align-items: start; }
+.thumb { width: 88px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px; background: var(--line); }
+.list li.done .thumb { opacity: .6; }
 .xbox-live { display: grid; gap: 10px; margin-bottom: 14px; }
 .xbox-live:empty { display: none; }
 .xbox-connect { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 14px; border: 1px dashed var(--line); border-radius: 8px; }

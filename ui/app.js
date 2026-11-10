@@ -67,13 +67,33 @@ function openUrl(url) {
   invoke("open_url", { url }).catch((err) => toast(String(err)));
 }
 
+/** Délai avant l'actualisation qui suit l'ouverture d'une tâche, le temps que Microsoft la valide. */
+const TASK_REFRESH_DELAY_MS = 10_000;
+let taskRefreshTimer;
+
+/** Ouvre une tâche (étape de quête, activité, série) puis actualise 10 secondes plus tard. */
+function openTask(url) {
+  openUrl(url);
+  clearTimeout(taskRefreshTimer);
+  taskRefreshTimer = setTimeout(refresh, TASK_REFRESH_DELAY_MS);
+  toast("Actualisation automatique dans 10 secondes.");
+}
+
+/** Vignette à gauche du titre, comme sur le site Rewards et dans l'app Xbox. */
+function withThumb(imageUrl, ...children) {
+  const text = h("div", { class: "item-text" }, ...children);
+  return imageUrl
+    ? h("div", { class: "item-head" }, h("img", { class: "thumb", src: imageUrl, alt: "", loading: "lazy" }), text)
+    : text;
+}
+
 function activityItem(activity) {
   const title = activity.url
-    ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(activity.url); } }, activity.title)
+    ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(activity.url); } }, activity.title)
     : activity.title;
   return h("li", { class: activity.complete ? "done" : "" },
     h("span", { class: `state${activity.complete ? " done" : ""}`, "aria-label": activity.complete ? "Terminé" : "À faire" }),
-    h("div", {},
+    withThumb(activity.imageUrl,
       h("div", { class: "title" }, title, " ",
         activity.xbox ? h("span", { class: "tag" }, "Xbox") : null,
         activity.locked ? h("span", { class: "tag lock" }, "Verrouillé") : null),
@@ -146,7 +166,7 @@ function streakCard(streak) {
     h("div", { class: "days", "aria-label": `${streak.completedDays} jours sur ${streak.totalDays}` }, days),
     h("div", { class: "streak-foot" },
       h("span", { class: streak.todayDone ? "ok" : "warn" }, streak.todayDone ? `✓ ${streak.todayLabel}` : `À faire : ${streak.todayLabel}`),
-      streak.url ? h("button", { class: "btn small", type: "button", onclick: () => openUrl(streak.url) }, "Y aller ↗") : null));
+      streak.url ? h("button", { class: "btn small", type: "button", onclick: () => openTask(streak.url) }, "Y aller ↗") : null));
 }
 
 function renderStreaks(data) {
@@ -171,9 +191,16 @@ function renderStreaks(data) {
   $("streaks").replaceChildren(...cards);
 }
 
+let refreshing = false;
+
+/** Actualise tout : points, activités, séries, quêtes, et quêtes Xbox si un compte est connecté. */
 async function refresh() {
-  const button = $("refresh-btn");
-  button.disabled = true;
+  if (refreshing) return;
+  refreshing = true;
+  clearTimeout(taskRefreshTimer);
+  const buttons = [$("refresh-btn"), $("side-refresh")];
+  for (const button of buttons) button.disabled = true;
+  $("side-refresh").textContent = "Actualisation…";
   try {
     renderSummary(await invoke("refresh_rewards"));
     setLoggedIn(true);
@@ -185,11 +212,15 @@ async function refresh() {
       $("fetch-error").hidden = false;
     }
   } finally {
-    button.disabled = false;
+    if (xboxLive.status.connected) await loadXbox(true);
+    for (const button of buttons) button.disabled = false;
+    $("side-refresh").textContent = "↻ Actualiser";
+    refreshing = false;
   }
 }
 
 $("refresh-btn").addEventListener("click", refresh);
+$("side-refresh").addEventListener("click", refresh);
 $("login-btn").addEventListener("click", async () => {
   try {
     await invoke("login");
@@ -283,10 +314,11 @@ function missionItem(m) {
   return h("li", { class: m.claimed ? "done" : m.locked ? "locked" : "" },
     missionIcon(m),
     h("div", {},
-      h("div", { class: "title" }, m.title, " ", m.claimable ? h("span", { class: "tag" }, "À réclamer") : null),
-      meta.length ? h("div", { class: "desc" }, meta.join(" · ")) : null,
-      m.description ? h("div", { class: "desc" }, m.description) : null,
-      m.requirement ? h("div", { class: "desc" }, `Pour débloquer : ${m.requirement}`) : null,
+      withThumb(m.imageUrl,
+        h("div", { class: "title" }, m.title, " ", m.claimable ? h("span", { class: "tag" }, "À réclamer") : null),
+        meta.length ? h("div", { class: "desc" }, meta.join(" · ")) : null,
+        m.description ? h("div", { class: "desc" }, m.description) : null,
+        m.requirement ? h("div", { class: "desc" }, `Pour débloquer : ${m.requirement}`) : null),
       days),
     h("span", { class: "pts" }, m.points ? `+${m.points} pts` : ""));
 }
@@ -435,7 +467,7 @@ function stepItem(step) {
     ? lockIcon()
     : h("span", { class: `state${step.complete ? " done" : ""}`, "aria-label": step.complete ? "Terminée" : "À faire" });
   const button = step.url && step.linkText && !step.complete
-    ? h("button", { class: "btn small", type: "button", disabled: step.locked, onclick: () => openUrl(step.url) }, `${step.linkText} ↗`)
+    ? h("button", { class: "btn small", type: "button", disabled: step.locked, onclick: () => openTask(step.url) }, `${step.linkText} ↗`)
     : null;
   return h("li", { class: step.complete ? "done" : step.locked ? "locked" : "" },
     icon,
@@ -458,15 +490,16 @@ function questItem(card, { open = false } = {}) {
           h("div", { class: "quest-text" },
             card.description ? h("p", { class: "desc" }, card.description) : null,
             card.steps.length ? h("ol", { class: "quest-steps" }, card.steps.map(stepItem)) : null,
-            card.url ? h("button", { class: "btn small ghost", type: "button", onclick: () => openUrl(card.url) }, "Ouvrir la quête sur Microsoft Rewards ↗") : null)))
+            card.url ? h("button", { class: "btn small ghost", type: "button", onclick: () => openTask(card.url) }, "Ouvrir la quête sur Microsoft Rewards ↗") : null)))
     : null;
   return h("li", { class: card.complete ? "done" : "" },
     h("span", { class: `state${card.complete ? " done" : ""}` }),
     h("div", {},
-      h("div", { class: "title" },
-        card.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(card.url); } }, card.title) : card.title,
-        " ", card.xbox ? h("span", { class: "tag" }, "Xbox") : null),
-      meta.length ? h("div", { class: "desc" }, meta.join(" · ")) : null,
+      withThumb(card.imageUrl,
+        h("div", { class: "title" },
+          card.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(card.url); } }, card.title) : card.title,
+          " ", card.xbox ? h("span", { class: "tag" }, "Xbox") : null),
+        meta.length ? h("div", { class: "desc" }, meta.join(" · ")) : null),
       details),
     h("div", { class: "quest-side" },
       starButton(card),
@@ -490,7 +523,7 @@ function starButton(quest) {
 
 async function toggleFollow(quest, follow) {
   try {
-    state.followed = await invoke("follow_quest", { id: quest.id, title: quest.title, url: quest.url ?? null, follow });
+    state.followed = await invoke("follow_quest", { id: quest.id, title: quest.title, url: quest.url ?? null, imageUrl: quest.imageUrl ?? null, follow });
   } catch (err) {
     toast(String(err));
     return;
@@ -519,9 +552,9 @@ function renderFollowed() {
       : "Connectez-vous pour voir l'avancement de cette quête.";
     return h("li", {},
       h("span", { class: "state" }),
-      h("div", {},
+      withThumb(quest.imageUrl,
         h("div", { class: "title" },
-          quest.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(quest.url); } }, quest.title) : quest.title),
+          quest.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(quest.url); } }, quest.title) : quest.title),
         h("div", { class: "desc" }, `${reason} Suivie depuis le ${expiryFormat.format(new Date(quest.followedOn))}.`)),
       h("div", { class: "quest-side" }, starButton(quest)));
   });

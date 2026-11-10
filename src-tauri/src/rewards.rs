@@ -50,6 +50,7 @@ pub struct Activity {
     pub complete: bool,
     pub locked: bool,
     pub url: Option<String>,
+    pub image_url: Option<String>,
     /// Activité liée à Xbox ou au Game Pass, mise en avant dans l'interface.
     pub xbox: bool,
 }
@@ -393,6 +394,11 @@ fn activity(object: &Map<String, Value>) -> Option<Activity> {
         locked: is_true(object, "isLocked"),
         url: object
             .get("destination")
+            .and_then(Value::as_str)
+            .filter(|u| u.starts_with("https://"))
+            .map(str::to_string),
+        image_url: object
+            .get("imageUrl")
             .and_then(Value::as_str)
             .filter(|u| u.starts_with("https://"))
             .map(str::to_string),
@@ -831,7 +837,7 @@ mod tests {
             r#"5:{{"balance":3345,"level":1}}
 6:{{"memberTitle":"Membre"}}
 7:{{"pointsCounters":{{"dailyOffer":101,"pc":{{"max":15,"progress":9,"originalMax":15}},"totalPoints":110,"boostActivated":false}}}}
-8:{{"dailySetItems":[{{"date":"{today}","description":"Rock, pop","destination":"https://www.bing.com/search?q=concerts","isCompleted":false,"isLocked":"$undefined","offerId":"Global_DailySet_Child1","points":10,"title":"Événements musicaux"}},{{"date":"{today}","isCompleted":true,"offerId":"Global_DailySet_Child2","points":10,"title":"Perth"}},{{"date":"01/01/2020","isCompleted":false,"offerId":"Old","points":10,"title":"Ancienne"}}]}}
+8:{{"dailySetItems":[{{"date":"{today}","description":"Rock, pop","destination":"https://www.bing.com/search?q=concerts","imageUrl":"https://bing.com/th?id=OMR.Music_Tile.jpg&pid=Rewards","isCompleted":false,"isLocked":"$undefined","offerId":"Global_DailySet_Child1","points":10,"title":"Événements musicaux"}},{{"date":"{today}","isCompleted":true,"offerId":"Global_DailySet_Child2","points":10,"title":"Perth"}},{{"date":"01/01/2020","isCompleted":false,"offerId":"Old","points":10,"title":"Ancienne"}}]}}
 9:[{{"offerId":"WW_Rewards_locked_level2_offer1","title":"À la découverte de Mars","points":15,"isCompleted":false,"isLocked":true,"destination":"https://rewards.bing.com/level"}},{{"offerId":"WW_banner","title":"Bannière","points":0,"isCompleted":false}},{{"offerId":"Xbox_offer","title":"Jouez sur Xbox","points":20,"isCompleted":false,"destination":"https://www.xbox.com"}},{{"offerId":"Global_DailySet_Child1","title":"Événements musicaux","points":10}}]
 10:[{{"destination":"https://rewards.bing.com/earn/quest/WW_pcparent_Roblox_Soundwave_HP_punchcard?form=ML2Y1R","imageUrl":"https://bing.com/th?id=OMR.RobloxEx.png&pid=Rewards","isCompleted":false,"name":"WW_Rewards_Campaign_Roblox_Awareness","points":0,"title":"Équipement d’avatar exclusif","description":"Offrez un nouveau look à votre avatar Roblox"}},{{"destination":"https://rewards.bing.com/earn/quest/WW_pcparent_FY27_Duolingo3M_punchcard?form=ML2Y43","points":0,"title":"Obtenez Super Duolingo","description":"Profitez de 2 mois gratuits"}}]
 80:["$","$L3f",null,{{"src":"https://bing.com/th?id=OMR.hero_superduolingo.png&pid=Rewards","alt":"Débloquez Super Duolingo","fill":true}}]
@@ -861,6 +867,11 @@ mod tests {
         let daily: Vec<_> = s.daily_set.iter().map(|a| a.id.as_str()).collect();
         assert_eq!(daily, ["Global_DailySet_Child1", "Global_DailySet_Child2"]);
         assert_eq!(s.daily_set_left(), 1);
+        assert!(s.daily_set[0]
+            .image_url
+            .as_deref()
+            .unwrap()
+            .contains("Music_Tile"));
         assert_eq!(
             s.daily_set[0].url.as_deref(),
             Some("https://www.bing.com/search?q=concerts")
