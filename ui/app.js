@@ -58,7 +58,10 @@ for (const item of document.querySelectorAll(".nav-item")) {
 
 function setLoggedIn(loggedIn) {
   state.loggedIn = loggedIn;
-  $("account-line").textContent = loggedIn ? "Compte Microsoft connecté" : "Non connecté";
+  const name = state.summary?.accountName;
+  $("account-line").replaceChildren(...(loggedIn
+    ? [name ? h("b", {}, name) : "Compte Microsoft", h("div", { class: "small" }, "Compte Microsoft connecté")]
+    : ["Non connecté"]));
   $("logout-btn").disabled = !loggedIn;
   showView(state.view);
 }
@@ -106,7 +109,8 @@ function activityItem(activity) {
       h("div", { class: "title" }, title, " ",
         activity.xbox ? h("span", { class: "tag" }, "Xbox") : null,
         activity.locked ? h("span", { class: "tag lock" }, "Verrouillé") : null),
-      activity.description ? h("div", { class: "desc" }, activity.description) : null),
+      activity.description ? h("div", { class: "desc" }, activity.description) : null,
+      activity.note ? h("div", { class: "desc" }, activity.note) : null),
     h("span", { class: "pts" }, `${activity.points} pts`));
 }
 
@@ -141,11 +145,21 @@ function renderSummary(summary) {
   $("daily-set").replaceChildren(...(daily.length ? daily.map(activityItem)
     : [h("li", { class: "empty" }, "Pas d'activités du jour pour le moment.")]));
 
+  // « Explorer sur Bing » a sa propre section, comme sur le site : à faire, puis verrouillées, puis faites.
+  const isExplore = (a) => a.id.toLowerCase().includes("exploreonbing");
+  const explore = summary.more.filter(isExplore);
+  const exploreRank = (a) => (a.complete ? 2 : a.locked ? 1 : 0);
+  explore.sort((a, b) => exploreRank(a) - exploreRank(b));
+  $("explore-panel").hidden = explore.length === 0;
+  $("explore-count").textContent = `${explore.filter((a) => a.complete).length} / ${explore.length} faites`;
+  $("explore").replaceChildren(...explore.map(activityItem));
+
   // À faire d'abord (Xbox puis les plus payantes), les activités terminées à la fin.
-  const todo = summary.more.filter((a) => !a.complete);
-  const done = summary.more.filter((a) => a.complete);
+  const others = summary.more.filter((a) => !isExplore(a));
+  const todo = others.filter((a) => !a.complete);
+  const done = others.filter((a) => a.complete);
   todo.sort((a, b) => Number(b.xbox) - Number(a.xbox) || b.points - a.points);
-  $("more").replaceChildren(...(summary.more.length ? [...todo, ...done].map(activityItem)
+  $("more").replaceChildren(...(others.length ? [...todo, ...done].map(activityItem)
     : [h("li", { class: "empty" }, "Aucune autre activité pour le moment.")]));
   $("more-done").textContent = todo.length || !done.length ? "" : "Toutes les autres activités sont terminées.";
 

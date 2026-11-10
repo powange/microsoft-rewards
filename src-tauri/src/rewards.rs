@@ -51,6 +51,8 @@ pub struct Activity {
     pub locked: bool,
     pub url: Option<String>,
     pub image_url: Option<String>,
+    /// Précision affichée par le site, par exemple « Déverrouille demain ».
+    pub note: Option<String>,
     /// Activité liée à Xbox ou au Game Pass, mise en avant dans l'interface.
     pub xbox: bool,
 }
@@ -101,6 +103,8 @@ struct QuestPage {
 #[serde(rename_all = "camelCase")]
 pub struct RewardsSummary {
     pub fetched_at: DateTime<Local>,
+    /// Nom du compte Microsoft, tel qu'affiché dans l'en-tête du site.
+    pub account_name: Option<String>,
     pub available_points: i64,
     pub level: Option<String>,
     /// Points gagnés vers le niveau suivant.
@@ -308,7 +312,7 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
     let (daily_set, daily_ids) = daily_set(&earn);
     let mut more: Vec<Activity> = Vec::new();
     for object in flight::objects_with_key(&earn, "offerId") {
-        let Some(activity) = activity(&object) else {
+        let Some(activity) = activity(&object).or_else(|| card_activity(&object, &earn)) else {
             continue;
         };
         let id = activity.id.to_lowercase();
@@ -324,6 +328,7 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
 
     Ok(RewardsSummary {
         fetched_at: Local::now(),
+        account_name: account_name(&earn),
         available_points,
         level,
         level_progress,
@@ -339,6 +344,18 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
         },
         streaks: streaks::parse(&earn),
     })
+}
+
+/// Nom du compte : composant d'en-tête `{"name":"…","profilePictureUrl":"…"}`.
+fn account_name(text: &str) -> Option<String> {
+    flight::objects_with_key(text, "profilePictureUrl")
+        .iter()
+        .find_map(|o| {
+            o.get("name")?
+                .as_str()
+                .filter(|n| !n.is_empty())
+                .map(str::to_string)
+        })
 }
 
 /// Points « Prêt à réclamer » : `"pointClaim":{"points":99,…}` sur le tableau de bord,
@@ -444,6 +461,68 @@ fn activity(object: &Map<String, Value>) -> Option<Activity> {
             .and_then(Value::as_str)
             .filter(|u| u.starts_with("https://"))
             .map(str::to_string),
+        note: None,
+        id,
+        title,
+        description,
+        points,
+    })
+}
+
+/// Carte d'activité dont titre, description, image et points ne figurent que dans son rendu,
+/// comme celles de la section « Explorer sur Bing » : seuls `offerId`, `isCompleted`,
+/// `isLocked` et `href` sont des propriétés de l'élément.
+fn card_activity(object: &Map<String, Value>, text: &str) -> Option<Activity> {
+    let id = object.get("offerId")?.as_str()?.to_string();
+    let children = object.get("children")?;
+    let mut paragraphs: Vec<String> = Vec::new();
+    let mut image_url = None;
+    let mut points = None;
+    let mut note = None;
+    visit(children, text, &mut |node| match node {
+        Value::Array(items) => {
+            if items.len() == 4 && items[0] == "$" && items[1] == "p" {
+                if let Some(text) = items[3].get("children").and_then(Value::as_str) {
+                    // Les titres se terminent parfois par une espace sans chasse (U+200B).
+                    let text = text.trim_matches(|c: char| c == '\u{200b}' || c.is_whitespace());
+                    if !text.is_empty() {
+                        paragraphs.push(text.to_string());
+                    }
+                }
+            }
+            // Points : ["+", "10"] à faire, ["", "10"] (avec une coche) une fois fait.
+            if items.len() == 2 && (items[0] == "+" || items[0] == "") {
+                if let Some(value) = items[1].as_str().and_then(parse_points) {
+                    points.get_or_insert(value);
+                }
+            }
+        }
+        Value::Object(props) if image_url.is_none() => {
+            image_url = props
+                .get("src")
+                .and_then(Value::as_str)
+                .filter(|u| u.starts_with("https://"))
+                .map(str::to_string);
+        }
+        Value::String(text) if note.is_none() && text.to_lowercase().contains("verrouill") => {
+            note = Some(text.clone());
+        }
+        _ => {}
+    });
+    let title = paragraphs.first()?.clone();
+    let description = paragraphs.get(1).cloned().unwrap_or_default();
+    let points = points.filter(|p| *p > 0)?;
+    Some(Activity {
+        xbox: is_xbox(&[&title, &description, &id]),
+        complete: is_true(object, "isCompleted"),
+        locked: is_true(object, "isLocked"),
+        url: object
+            .get("href")
+            .and_then(Value::as_str)
+            .filter(|u| u.starts_with("https://"))
+            .map(str::to_string),
+        image_url,
+        note,
         id,
         title,
         description,
@@ -877,11 +956,13 @@ mod tests {
         let today = Local::now().format("%m/%d/%Y");
         format!(
             r#"5:{{"balance":3345,"level":1}}
+6b:["$","$L59",null,{{"name":"Pierre Comble","profilePictureUrl":"https://storage.live.com/users/x/myprofile"}}]
 6:{{"memberTitle":"Membre"}}
 7:{{"pointsCounters":{{"dailyOffer":101,"pc":{{"max":15,"progress":9,"originalMax":15}},"totalPoints":110,"boostActivated":false}}}}
 8:{{"dailySetItems":[{{"date":"{today}","description":"Rock, pop","destination":"https://www.bing.com/search?q=concerts","imageUrl":"https://bing.com/th?id=OMR.Music_Tile.jpg&pid=Rewards","isCompleted":false,"isLocked":"$undefined","offerId":"Global_DailySet_Child1","points":10,"title":"Événements musicaux"}},{{"date":"{today}","isCompleted":true,"offerId":"Global_DailySet_Child2","points":10,"title":"Perth"}},{{"date":"01/01/2020","isCompleted":false,"offerId":"Old","points":10,"title":"Ancienne"}}]}}
 9:[{{"offerId":"WW_Rewards_locked_level2_offer1","title":"À la découverte de Mars","points":15,"isCompleted":false,"isLocked":true,"destination":"https://rewards.bing.com/level"}},{{"offerId":"WW_banner","title":"Bannière","points":0,"isCompleted":false}},{{"offerId":"Xbox_offer","title":"Jouez sur Xbox","points":20,"isCompleted":false,"destination":"https://www.xbox.com"}},{{"offerId":"Global_DailySet_Child1","title":"Événements musicaux","points":10}}]
 10:[{{"destination":"https://rewards.bing.com/earn/quest/WW_pcparent_Roblox_Soundwave_HP_punchcard?form=ML2Y1R","imageUrl":"https://bing.com/th?id=OMR.RobloxEx.png&pid=Rewards","isCompleted":false,"name":"WW_Rewards_Campaign_Roblox_Awareness","points":0,"title":"Équipement d’avatar exclusif","description":"Offrez un nouveau look à votre avatar Roblox"}},{{"destination":"https://rewards.bing.com/earn/quest/WW_pcparent_FY27_Duolingo3M_punchcard?form=ML2Y43","points":0,"title":"Obtenez Super Duolingo","description":"Profitez de 2 mois gratuits"}}]
+7a:["$","$L78","3",{{"href":"https://www.bing.com/?form=ML2PCR&rwAutoFlyout=exb","offerId":"ENUS_bankaccounts_exploreonbing_activation_Evergreen","isCompleted":false,"isLocked":true,"children":["$","$L2b",null,{{"children":["$","div",null,{{"children":[["$","$L41",null,{{"src":"https://bing.com/th?id=OMR.Bank_accounts.png&pid=Rewards","alt":"Banquez plus intelligemment​"}}],["$","p",null,{{"className":"line-clamp-3","children":"Banquez plus intelligemment​"}}],["$","p",null,{{"className":"line-clamp-3","children":"Recherchez sur Bing pour comparer les comptes"}}],["$","p",null,{{"children":["+","10"]}}],["$","div",null,{{"children":"Déverrouille demain"}}]]}}]}}]}}]
 80:["$","$L3f",null,{{"src":"https://bing.com/th?id=OMR.hero_superduolingo.png&pid=Rewards","alt":"Débloquez Super Duolingo","fill":true}}]
 82:["$","$L2b","1",{{"href":"/earn/quest/WW_pcparent_FY27_Duolingo3M_punchcard","instrument":{{"data":{{"offerId":"WW_pcparent_FY27_Duolingo3M_punchcard"}}}},"children":["$","div",null,{{"children":["$80",["$","span",null,{{"children":["$","$L90",null,{{"expiresAt":"$D2026-12-04T08:00:00.000Z","prefix":"Date d’expiration"}}]}}],["$","div",null,{{"children":"0/6 tâches"}}]]}}]}}]
 83:["$","$L2b","2",{{"href":"/earn/quest/WW_evergreen_pcparent_SeaofThieves_CeruleanSheenCutlass_punchcard","children":["$","div",null,{{"children":[["$","$L3f",null,{{"src":"https://bing.com/th?id=OMR.SoT_1200x675.jpg&pid=Rewards","alt":"Sea of Thieves - Sabre"}}],["$","h3",null,{{"className":"text-globalBody2Strong","children":"Sea of Thieves - Sabre à éclat céruléen"}}],["$","div",null,{{"children":["+","50"]}}],["$","div",null,{{"children":"1/4 tâches"}}]]}}]}}]
@@ -897,6 +978,7 @@ mod tests {
         );
         let s = parse(&page(&earn_rows()), Some(&dashboard)).unwrap();
         assert_eq!(s.available_points, 3345);
+        assert_eq!(s.account_name.as_deref(), Some("Pierre Comble"));
         assert_eq!(s.level.as_deref(), Some("Membre"));
         assert_eq!(
             (s.level_progress, s.level_progress_max),
@@ -922,7 +1004,28 @@ mod tests {
         );
 
         let more: Vec<_> = s.more.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(more, ["WW_Rewards_locked_level2_offer1", "Xbox_offer"]);
+        assert_eq!(
+            more,
+            [
+                "WW_Rewards_locked_level2_offer1",
+                "Xbox_offer",
+                "ENUS_bankaccounts_exploreonbing_activation_Evergreen"
+            ]
+        );
+        let explore = &s.more[2];
+        assert_eq!(explore.title, "Banquez plus intelligemment");
+        assert_eq!(
+            explore.description,
+            "Recherchez sur Bing pour comparer les comptes"
+        );
+        assert_eq!(explore.points, 10);
+        assert!(explore.locked && !explore.complete);
+        assert_eq!(explore.note.as_deref(), Some("Déverrouille demain"));
+        assert!(explore
+            .image_url
+            .as_deref()
+            .unwrap()
+            .contains("Bank_accounts"));
         assert!(s.more[0].locked);
         assert!(s.more[1].xbox);
     }
