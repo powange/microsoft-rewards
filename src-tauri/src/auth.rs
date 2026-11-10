@@ -4,7 +4,7 @@
 //! la connexion terminée. Cette fenêtre n'a accès à aucune commande de l'application.
 
 use std::sync::Mutex;
-use tauri::webview::PageLoadEvent;
+use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 use url::Url;
@@ -135,6 +135,19 @@ pub fn open_site<R: Runtime>(
         .title("Microsoft Rewards")
         .inner_size(1100.0, 820.0)
         .center()
+        // Le site ouvre la recherche Bing, le quiz… dans une nouvelle fenêtre après avoir
+        // validé le clic. Sans ce gestionnaire, WebView2 bloque ces fenêtres en silence.
+        // La fenêtre ouverte partage la session : la recherche est faite avec le compte connecté.
+        .on_new_window({
+            let handle = app.clone();
+            move |url, _| {
+                if url.scheme() != "https" {
+                    return NewWindowResponse::Deny;
+                }
+                let _ = handle.emit("rewards-site-navigated", url.as_str());
+                NewWindowResponse::Allow
+            }
+        })
         .on_page_load(move |window, payload| {
             if payload.event() != PageLoadEvent::Finished {
                 return;

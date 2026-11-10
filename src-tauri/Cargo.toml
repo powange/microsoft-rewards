@@ -1,6 +1,6 @@
 [package]
 name = "rewards-autoplay"
-version = "0.2.13"
+version = "0.2.14"
 description = "Suivi Microsoft Rewards et rappels des quêtes Xbox"
 authors = ["powange"]
 edition = "2021"
