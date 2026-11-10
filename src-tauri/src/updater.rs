@@ -31,48 +31,61 @@ pub async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<Option<UpdateInfo>,
 
 /// Vérification périodique : prévient une seule fois par version trouvée.
 ///
-/// Avec `auto_install`, la mise à jour est installée seule (puis l'application redémarre),
-/// mais seulement si la fenêtre est fermée, pour ne pas interrompre l'utilisateur.
-pub async fn background_check<R: Runtime>(app: &AppHandle<R>, auto_install: bool) {
+/// Renvoie `true` quand une mise à jour est disponible. Avec `auto_install`, elle sera
+/// installée par [`auto_install_when_idle`] dès que l'application n'a plus de fenêtre ouverte.
+pub async fn background_check<R: Runtime>(app: &AppHandle<R>, auto_install: bool) -> bool {
     match check(app).await {
         Ok(Some(info)) => {
-            let window_open = app
-                .get_webview_window("main")
-                .and_then(|w| w.is_visible().ok())
-                .unwrap_or(false);
-            if auto_install && !window_open {
-                log::info!("Installation automatique de la version {}", info.version);
-                crate::notify(
-                    app,
-                    "Mise à jour en cours",
-                    &format!(
-                        "Rewards Autoplay installe la version {} et va redémarrer.",
-                        info.version
-                    ),
-                );
-                match install(app).await {
-                    Ok(()) => return,
-                    Err(err) => log::warn!("Installation automatique impossible : {err}"),
-                }
-            }
             let _ = app.emit("update-available", &info);
             let state = app.state::<crate::AppState>();
             let mut notified = state.notified_update.lock().unwrap();
             if notified.as_deref() != Some(info.version.as_str()) {
-                crate::notify(
-                    app,
-                    "Mise à jour disponible",
-                    &format!(
+                let body = if auto_install {
+                    format!(
+                        "La version {} de Rewards Autoplay s'installera dès que la fenêtre sera fermée.",
+                        info.version
+                    )
+                } else {
+                    format!(
                         "La version {} de Rewards Autoplay est prête à être installée.",
                         info.version
-                    ),
-                );
+                    )
+                };
+                crate::notify(app, "Mise à jour disponible", &body);
                 *notified = Some(info.version);
             }
+            true
         }
-        Ok(None) => {}
-        Err(err) => log::warn!("Vérification des mises à jour impossible : {err}"),
+        Ok(None) => false,
+        Err(err) => {
+            log::warn!("Vérification des mises à jour impossible : {err}");
+            false
+        }
     }
+}
+
+/// Installe la mise à jour en attente si aucune fenêtre de l'application n'est affichée
+/// (fenêtre principale, fenêtre Rewards, connexion), pour ne pas interrompre l'utilisateur.
+/// Renvoie `true` si l'installation reste à faire.
+pub async fn auto_install_when_idle<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let busy = app
+        .webview_windows()
+        .values()
+        .any(|w| w.is_visible().unwrap_or(false));
+    if busy {
+        return true;
+    }
+    log::info!("Installation automatique de la mise à jour");
+    crate::notify(
+        app,
+        "Mise à jour en cours",
+        "Rewards Autoplay installe la nouvelle version et va redémarrer.",
+    );
+    if let Err(err) = install(app).await {
+        // Nouvel essai à la prochaine vérification des mises à jour.
+        log::warn!("Installation automatique impossible : {err}");
+    }
+    false
 }
 
 /// Télécharge, installe puis redémarre l'application.
