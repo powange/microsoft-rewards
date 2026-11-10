@@ -71,6 +71,12 @@ async fn todo_lines<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Vec<
         match crate::refresh(app).await {
             Ok(summary) => {
                 if settings.remind_bing {
+                    if summary.claimable_points > 0 {
+                        lines.push(format!(
+                            "Rewards : {} points prêts à réclamer sur le tableau de bord",
+                            summary.claimable_points
+                        ));
+                    }
                     let points = summary.search_points_left();
                     if points > 0 {
                         lines.push(format!("Bing : {points} points de recherche à gagner"));

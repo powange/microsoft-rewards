@@ -45,6 +45,7 @@
             <p class="eyebrow" id="today-date"></p>
             <div class="points"><span id="points">—</span><span class="unit">points</span></div>
             <div class="level" id="level"></div>
+            <button class="claim" id="claim" type="button" hidden></button>
           </div>
           <div class="head-actions">
             <span class="muted small" id="fetched-at"></span>
@@ -184,6 +185,8 @@
             <label class="check"><input type="checkbox" id="remind-xbox"> Jeu Xbox du jour pas encore fait</label>
             <span></span>
             <label class="check"><input type="checkbox" id="remind-streaks"> Séries dont l'étape du jour n'est pas faite (un jour manqué remet la série à zéro)</label>
+            <span></span>
+            <label class="check"><input type="checkbox" id="notify-unlocks"> Prévenir dès qu'une tâche verrouillée se déverrouille (étape de quête, activité)</label>
             <span></span>
             <div><button class="btn" id="test-reminder">Envoyer le rappel maintenant</button> <span class="muted small" id="test-reminder-result"></span></div>
           </div>

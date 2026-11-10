@@ -108,6 +108,12 @@ function renderSummary(summary) {
   if (summary.level) level.push(`Niveau : ${summary.level}`);
   if (summary.levelProgressMax) level.push(`${numberFormat.format(summary.levelProgress ?? 0)} / ${numberFormat.format(summary.levelProgressMax)} points vers le niveau suivant`);
   $("level").textContent = level.join(" · ");
+  const claim = $("claim");
+  claim.hidden = false;
+  claim.classList.toggle("ready", summary.claimablePoints > 0);
+  claim.textContent = summary.claimablePoints > 0
+    ? `${numberFormat.format(summary.claimablePoints)} points prêts à réclamer · Réclamer ↗`
+    : "Aucun point à réclamer";
   const every = state.settings?.refreshIntervalMinutes;
   $("fetched-at").textContent = `Actualisé à ${timeFormat.format(new Date(summary.fetchedAt))}`
     + (every ? ` · automatiquement toutes les ${every} min` : "");
@@ -220,6 +226,8 @@ async function refresh() {
 }
 
 $("refresh-btn").addEventListener("click", refresh);
+// L'encart « Prêt à réclamer » est en haut du tableau de bord Rewards.
+$("claim").addEventListener("click", () => openTask("https://rewards.bing.com/dashboard"));
 $("side-refresh").addEventListener("click", refresh);
 $("login-btn").addEventListener("click", async () => {
   try {
@@ -663,6 +671,7 @@ async function saveSettings() {
     remindBing: $("remind-bing").checked,
     remindXbox: $("remind-xbox").checked,
     remindStreaks: $("remind-streaks").checked,
+    notifyUnlocks: $("notify-unlocks").checked,
     subscription: $("subscription").value,
     autoCheckUpdates: $("auto-update").checked,
     updateCheckIntervalMinutes: clampMinutesInput("update-interval", 15, 10080),
@@ -680,6 +689,7 @@ function renderSettings(settings) {
   $("remind-bing").checked = settings.remindBing;
   $("remind-xbox").checked = settings.remindXbox;
   $("remind-streaks").checked = settings.remindStreaks;
+  $("notify-unlocks").checked = settings.notifyUnlocks;
   $("subscription").value = settings.subscription;
   $("auto-update").checked = settings.autoCheckUpdates;
   $("update-interval").value = settings.updateCheckIntervalMinutes;
@@ -716,7 +726,7 @@ function refreshMinutesInput() {
   return minutes;
 }
 
-for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval", "mode-reminders"]) {
+for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval", "mode-reminders"]) {
   $(id).addEventListener("change", saveSettings);
 }
 

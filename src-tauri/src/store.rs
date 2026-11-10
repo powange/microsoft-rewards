@@ -36,6 +36,8 @@ pub struct Settings {
     pub remind_xbox: bool,
     /// Rappeler les séries dont l'étape du jour n'est pas faite.
     pub remind_streaks: bool,
+    /// Notifier quand une tâche verrouillée devient accessible.
+    pub notify_unlocks: bool,
     pub subscription: Subscription,
     pub auto_check_updates: bool,
     /// Délai entre deux recherches de mise à jour, en minutes.
@@ -60,6 +62,7 @@ impl Default for Settings {
             remind_bing: true,
             remind_xbox: true,
             remind_streaks: true,
+            notify_unlocks: true,
             subscription: Subscription::None,
             auto_check_updates: true,
             update_check_interval_minutes: 360,
@@ -120,6 +123,8 @@ struct Persisted {
     xbox_sessions: BTreeMap<NaiveDate, XboxSession>,
     last_reminder: Option<NaiveDate>,
     followed_quests: Vec<FollowedQuest>,
+    /// Tâches verrouillées lors de la dernière actualisation, pour repérer les déverrouillages.
+    locked_tasks: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -190,6 +195,16 @@ impl Store {
     #[cfg(test)]
     fn reload(&self) -> Self {
         Self::load(self.path.clone())
+    }
+
+    /// Remplace la liste des tâches verrouillées et renvoie la précédente.
+    pub fn swap_locked_tasks(&self, locked: BTreeSet<String>) -> BTreeSet<String> {
+        let mut data = self.data.lock().unwrap();
+        let previous = std::mem::replace(&mut data.locked_tasks, locked);
+        if previous != data.locked_tasks {
+            self.save(&data);
+        }
+        previous
     }
 
     pub fn followed_quests(&self) -> Vec<FollowedQuest> {
@@ -311,6 +326,20 @@ mod tests {
                 .len(),
             1
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn remembers_locked_tasks_between_refreshes() {
+        let path = std::env::temp_dir().join(format!(
+            "rewards-autoplay-locked-{}.json",
+            std::process::id()
+        ));
+        let store = Store::load(path.clone());
+        let first: BTreeSet<String> = ["sot#Recherche".to_string()].into();
+        assert!(store.swap_locked_tasks(first.clone()).is_empty());
+        // Relancée, l'application retrouve la liste de la dernière actualisation.
+        assert_eq!(store.reload().swap_locked_tasks(BTreeSet::new()), first);
         let _ = std::fs::remove_file(path);
     }
 }

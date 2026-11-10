@@ -65,6 +65,7 @@ pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<RewardsSummary, F
         Ok(summary) => {
             *state.summary.lock().unwrap() = Some(summary.clone());
             tray::set_points(app, Some(summary.available_points));
+            notify_unlocked_tasks(app, summary);
             let _ = app.emit("rewards-updated", summary);
         }
         Err(FetchError::NotLoggedIn) => {
@@ -75,6 +76,35 @@ pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<RewardsSummary, F
         Err(err) => log::warn!("Lecture Rewards impossible : {err}"),
     }
     result
+}
+
+/// Prévient quand une tâche verrouillée à la dernière actualisation est devenue accessible.
+fn notify_unlocked_tasks<R: Runtime>(app: &AppHandle<R>, summary: &RewardsSummary) {
+    let tasks = summary.task_states();
+    let locked = tasks
+        .iter()
+        .filter(|t| t.locked)
+        .map(|t| t.key.clone())
+        .collect();
+    let state = app.state::<AppState>();
+    let previously_locked = state.store.swap_locked_tasks(locked);
+    if !state.store.settings().notify_unlocks {
+        return;
+    }
+    let unlocked: Vec<&str> = tasks
+        .iter()
+        .filter(|t| !t.locked && !t.complete && previously_locked.contains(&t.key))
+        .map(|t| t.label.as_str())
+        .collect();
+    match unlocked.as_slice() {
+        [] => {}
+        [one] => notify(app, "Tâche déverrouillée", one),
+        many => notify(
+            app,
+            &format!("{} tâches déverrouillées", many.len()),
+            &many.join("\n"),
+        ),
+    }
 }
 
 #[tauri::command]

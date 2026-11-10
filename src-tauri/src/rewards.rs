@@ -106,6 +106,8 @@ pub struct RewardsSummary {
     /// Points gagnés vers le niveau suivant.
     pub level_progress: Option<i64>,
     pub level_progress_max: Option<i64>,
+    /// Points gagnés en attente sur le tableau de bord (« Prêt à réclamer »).
+    pub claimable_points: i64,
     pub searches: Vec<Counter>,
     pub daily_set: Vec<Activity>,
     pub more: Vec<Activity>,
@@ -127,6 +129,35 @@ impl RewardsSummary {
             .iter()
             .filter(|a| !a.complete && !a.locked)
             .count()
+    }
+}
+
+/// Une tâche qui peut être verrouillée : étape de quête ou activité.
+pub struct TaskState {
+    /// Identifiant stable d'une actualisation à l'autre.
+    pub key: String,
+    pub label: String,
+    pub locked: bool,
+    pub complete: bool,
+}
+
+impl RewardsSummary {
+    pub fn task_states(&self) -> Vec<TaskState> {
+        let steps = self.punch_cards.iter().flat_map(|card| {
+            card.steps.iter().map(move |step| TaskState {
+                key: format!("{}#{}", card.id, step.title),
+                label: format!("{} ({})", step.title, card.title),
+                locked: step.locked,
+                complete: step.complete,
+            })
+        });
+        let activities = self.daily_set.iter().chain(&self.more).map(|a| TaskState {
+            key: format!("activite#{}", a.id),
+            label: a.title.clone(),
+            locked: a.locked,
+            complete: a.complete,
+        });
+        steps.chain(activities).collect()
     }
 }
 
@@ -297,6 +328,7 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
         level,
         level_progress,
         level_progress_max,
+        claimable_points: claimable_points(&dashboard),
         searches: searches(&earn),
         daily_set,
         more,
@@ -307,6 +339,16 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
         },
         streaks: streaks::parse(&earn),
     })
+}
+
+/// Points « Prêt à réclamer » : `"pointClaim":{"points":99,…}` sur le tableau de bord,
+/// `"pointClaim":null` quand il n'y a rien à réclamer.
+fn claimable_points(dashboard: &str) -> i64 {
+    flight::values_after_key(dashboard, "pointClaim")
+        .iter()
+        .filter_map(|claim| claim.get("points").and_then(as_int))
+        .next_back()
+        .unwrap_or(0)
 }
 
 /// Compteurs de recherche : `"pointsCounters":{"pc":{"max":15,"progress":9},…}`.
@@ -850,7 +892,8 @@ mod tests {
     #[test]
     fn parses_earn_and_dashboard_pages() {
         let dashboard = page(
-            r#"3:{"memberTitle":"Membre","pointsProgress":143,"pointsRemaining":357,"targetLevel":2}"#,
+            r#"3:{"memberTitle":"Membre","pointsProgress":143,"pointsRemaining":357,"targetLevel":2}
+4:["$","$L91",null,{"type":"pointsclaim","model":{"pointClaim":{"points":99}}}]"#,
         );
         let s = parse(&page(&earn_rows()), Some(&dashboard)).unwrap();
         assert_eq!(s.available_points, 3345);
@@ -859,6 +902,7 @@ mod tests {
             (s.level_progress, s.level_progress_max),
             (Some(143), Some(500))
         );
+        assert_eq!(s.claimable_points, 99);
 
         assert_eq!(s.searches.len(), 1);
         assert_eq!(s.searches[0].label, "Recherches PC");
@@ -886,6 +930,10 @@ mod tests {
     #[test]
     fn parses_quest_cards_including_referenced_rows() {
         let s = parse(&page(&earn_rows()), None).unwrap();
+        assert_eq!(
+            s.claimable_points, 0,
+            "rien à réclamer sans tableau de bord"
+        );
         assert_eq!(s.punch_cards.len(), 3);
 
         let duolingo = &s.punch_cards[0];
