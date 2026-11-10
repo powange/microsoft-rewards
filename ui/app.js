@@ -126,6 +126,7 @@ function renderSummary(summary) {
 function timeUntil(iso) {
   const minutes = Math.max(0, Math.round((new Date(iso) - Date.now()) / 60000));
   if (minutes < 60) return `dans ${minutes} min`;
+  if (minutes >= 48 * 60) return `dans ${Math.round(minutes / 1440)} j`;
   const hours = Math.floor(minutes / 60);
   return `dans ${hours} h${minutes % 60 ? ` ${minutes % 60} min` : ""}`;
 }
@@ -256,6 +257,150 @@ $("xbox-form").addEventListener("submit", async (e) => {
 });
 $("xbox-undo").addEventListener("click", async () => renderXbox(await invoke("set_xbox_today", { game: null })));
 $("open-xbox").addEventListener("click", () => invoke("open_xbox_app").catch((err) => toast(String(err))));
+
+// ---------- Quêtes Xbox réelles (connexion Xbox Live, expérimental) ----------
+
+const xboxLive = { status: { connected: false, gamertag: null }, rewards: null, error: null, loading: false };
+
+function missionIcon(m) {
+  if (m.locked) return lockIcon();
+  if (m.expired) return h("span", { class: "state failed", "aria-label": "Expirée" });
+  return h("span", { class: `state${m.claimed || m.claimable ? " done" : ""}`, "aria-label": m.claimed ? "Réclamée" : m.claimable ? "À réclamer" : "À faire" });
+}
+
+function missionItem(m) {
+  const meta = [];
+  if (m.statusLabel) meta.push(m.statusLabel);
+  if (m.kind === "single" && m.target) meta.push(`${m.count ?? 0}/${m.target}`);
+  if (m.kind !== "single" && m.target) meta.push(`${m.count}/${m.target}`);
+  if (m.resetDate && !m.claimed) meta.push(`réinitialisation ${timeUntil(m.resetDate)}`);
+  const days = m.steps.length
+    ? h("div", { class: "days" }, m.steps.map((step, i) => h("span", {
+        class: ["day", step.done ? "done" : "", i === m.current ? "today" : "", step.points ? "bonus" : ""].filter(Boolean).join(" "),
+        title: [step.label, step.points ? `+${step.points} pts` : "", step.note ?? ""].filter(Boolean).join(" · "),
+      }, step.done ? "✓" : step.points ? `+${step.points}` : "")))
+    : null;
+  return h("li", { class: m.claimed ? "done" : m.locked ? "locked" : "" },
+    missionIcon(m),
+    h("div", {},
+      h("div", { class: "title" }, m.title, " ", m.claimable ? h("span", { class: "tag" }, "À réclamer") : null),
+      meta.length ? h("div", { class: "desc" }, meta.join(" · ")) : null,
+      m.description ? h("div", { class: "desc" }, m.description) : null,
+      m.requirement ? h("div", { class: "desc" }, `Pour débloquer : ${m.requirement}`) : null,
+      days),
+    h("span", { class: "pts" }, m.points ? `+${m.points} pts` : ""));
+}
+
+function renderXboxLive() {
+  const box = $("xbox-live");
+  const { status, rewards, error, loading } = xboxLive;
+  const refused = error?.startsWith("xbox_refused");
+  // Le suivi manuel reste affiché tant que les vraies données ne sont pas disponibles.
+  $("xbox-manual").hidden = Boolean(status.connected && rewards && !error);
+
+  if (!status.connected) {
+    box.replaceChildren(h("div", { class: "xbox-connect" },
+      h("div", {},
+        h("b", {}, "Afficher vos vraies quêtes Xbox "), h("span", { class: "tag" }, "Expérimental"),
+        h("div", { class: "muted small" }, "Connectez votre compte Xbox Live pour lire le Rewards Hub de l'app Xbox : quêtes du jour, bonus hebdomadaires PC et console, application mobile, packs et points à réclamer."),
+        error && !refused ? h("div", { class: "error-text small" }, String(error)) : null),
+      h("button", { class: "btn primary", type: "button", onclick: xboxLogin }, "Connecter Xbox Live")));
+    return;
+  }
+
+  const head = h("div", { class: "xbox-live-head" },
+    h("span", {}, "Connecté à Xbox Live", status.gamertag ? h("b", {}, ` · ${status.gamertag}`) : null,
+      rewards?.tier ? h("span", { class: "muted small" }, ` · ${rewards.tier}${rewards.tierMax ? ` (${rewards.tierProgress ?? 0}/${rewards.tierMax})` : ""}`) : null),
+    h("span", { class: "btnrow" },
+      h("button", { class: "btn small", type: "button", disabled: loading, onclick: () => loadXbox(true) }, loading ? "Actualisation…" : "Actualiser"),
+      h("button", { class: "btn small ghost", type: "button", onclick: xboxLogout }, "Se déconnecter")));
+
+  const parts = [head];
+  if (refused) {
+    parts.push(h("div", { class: "banner danger" },
+      h("span", {}, "Le service Xbox des quêtes a refusé la connexion de Rewards Autoplay : il n'accepte sans doute que l'app Xbox elle-même. Le suivi manuel ci-dessous reste disponible.")));
+  } else if (error) {
+    parts.push(h("div", { class: "banner danger" }, h("span", {}, `Quêtes Xbox illisibles : ${error}`)));
+  } else if (!rewards) {
+    parts.push(h("p", { class: "muted" }, "Chargement des quêtes Xbox…"));
+  } else {
+    if (rewards.unclaimed > 0) {
+      parts.push(h("div", { class: "banner info" },
+        h("span", {}, h("b", {}, `${numberFormat.format(rewards.unclaimed)} points à réclamer`), " dans le Rewards Hub de l'app Xbox."),
+        h("button", { class: "btn primary", type: "button", onclick: () => invoke("open_xbox_app").catch((err) => toast(String(err))) }, "Ouvrir l'app Xbox")));
+    }
+    const groups = [
+      ["Quêtes du jour", rewards.missions.filter((m) => m.kind === "single")],
+      ["Séries et bonus", rewards.missions.filter((m) => m.kind === "streak")],
+      ["Packs", rewards.missions.filter((m) => m.kind === "pack")],
+    ];
+    for (const [title, missions] of groups) {
+      if (!missions.length) continue;
+      parts.push(h("h3", { class: "xbox-group" }, title), h("ul", { class: "list" }, missions.map(missionItem)));
+    }
+    if (!rewards.missions.length) parts.push(h("p", { class: "muted" }, "Aucune quête renvoyée par le service Xbox pour ce compte."));
+    parts.push(h("p", { class: "muted small" }, `Lu à ${timeFormat.format(new Date(rewards.fetchedAt))} depuis le Rewards Hub de l'app Xbox.`));
+  }
+  box.replaceChildren(...parts);
+}
+
+async function loadXbox(force) {
+  xboxLive.status = await invoke("xbox_status");
+  if (!xboxLive.status.connected) {
+    xboxLive.rewards = null;
+    renderXboxLive();
+    return;
+  }
+  xboxLive.loading = true;
+  renderXboxLive();
+  try {
+    xboxLive.rewards = await invoke("xbox_rewards", { force });
+    xboxLive.error = null;
+    if (xboxLive.rewards.gamertag) xboxLive.status.gamertag = xboxLive.rewards.gamertag;
+  } catch (err) {
+    if (String(err) === "xbox_not_connected") xboxLive.status = { connected: false, gamertag: null };
+    else xboxLive.error = String(err);
+  } finally {
+    xboxLive.loading = false;
+    renderXboxLive();
+  }
+}
+
+async function xboxLogin() {
+  xboxLive.error = null;
+  try {
+    await invoke("xbox_login");
+    toast("Terminez la connexion dans la fenêtre Microsoft.");
+  } catch (err) {
+    toast(String(err));
+  }
+}
+
+async function xboxLogout() {
+  await invoke("xbox_logout");
+  Object.assign(xboxLive, { status: { connected: false, gamertag: null }, rewards: null, error: null });
+  renderXboxLive();
+  toast("Compte Xbox Live déconnecté.");
+}
+
+listen("xbox-connected", (event) => {
+  xboxLive.status = event.payload;
+  xboxLive.error = null;
+  xboxLive.loading = true;
+  renderXboxLive();
+});
+listen("xbox-rewards-updated", (event) => {
+  xboxLive.rewards = event.payload;
+  xboxLive.error = null;
+  xboxLive.loading = false;
+  xboxLive.status = { connected: true, gamertag: event.payload.gamertag ?? xboxLive.status.gamertag };
+  renderXboxLive();
+});
+listen("xbox-error", (event) => {
+  xboxLive.error = String(event.payload);
+  xboxLive.loading = false;
+  renderXboxLive();
+});
 
 // ---------- Récompenses par jeu ----------
 
@@ -487,6 +632,8 @@ async function saveSettings() {
     remindStreaks: $("remind-streaks").checked,
     subscription: $("subscription").value,
     autoCheckUpdates: $("auto-update").checked,
+    updateCheckIntervalMinutes: clampMinutesInput("update-interval", 15, 10080),
+    autoInstallUpdates: $("auto-install").checked,
     refreshIntervalMinutes: refreshMinutesInput(),
   };
   await invoke("save_settings", { settings: state.settings });
@@ -502,7 +649,27 @@ function renderSettings(settings) {
   $("remind-streaks").checked = settings.remindStreaks;
   $("subscription").value = settings.subscription;
   $("auto-update").checked = settings.autoCheckUpdates;
+  $("update-interval").value = settings.updateCheckIntervalMinutes;
+  $("auto-install").checked = settings.autoInstallUpdates;
+  renderUpdateControls();
   $("refresh-interval").value = settings.refreshIntervalMinutes;
+}
+
+/** Valeur entière d'un champ, ramenée entre `min` et `max`. */
+function clampMinutesInput(id, min, max) {
+  const input = $(id);
+  let minutes = Math.round(Number(input.value));
+  if (!Number.isFinite(minutes)) minutes = min;
+  minutes = Math.min(Math.max(minutes, min), max);
+  input.value = minutes;
+  return minutes;
+}
+
+/** Délai et installation automatique n'ont de sens que si la recherche automatique est active. */
+function renderUpdateControls() {
+  const enabled = $("auto-update").checked;
+  $("update-interval").disabled = !enabled;
+  $("auto-install").disabled = !enabled;
 }
 
 /** Délai saisi, ramené au minimum de 5 minutes (0 désactive l'actualisation automatique). */
@@ -516,9 +683,11 @@ function refreshMinutesInput() {
   return minutes;
 }
 
-for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "subscription", "auto-update", "refresh-interval", "mode-reminders"]) {
+for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval", "mode-reminders"]) {
   $(id).addEventListener("change", saveSettings);
 }
+
+$("auto-update").addEventListener("change", renderUpdateControls);
 
 $("autostart").addEventListener("change", async (e) => {
   try {
@@ -611,6 +780,7 @@ listen("check-update-requested", () => {
   $("autostart").checked = autostart;
   renderXbox(xbox);
   renderFollowed();
+  loadXbox(false);
   if (cached) {
     renderSummary(cached);
     setLoggedIn(true);

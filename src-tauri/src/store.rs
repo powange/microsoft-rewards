@@ -38,12 +38,19 @@ pub struct Settings {
     pub remind_streaks: bool,
     pub subscription: Subscription,
     pub auto_check_updates: bool,
+    /// Délai entre deux recherches de mise à jour, en minutes.
+    pub update_check_interval_minutes: u32,
+    /// Installer seul une mise à jour trouvée, quand la fenêtre est fermée.
+    pub auto_install_updates: bool,
     /// Actualisation automatique des points, séries et quêtes, en minutes (0 = désactivée).
     pub refresh_interval_minutes: u32,
 }
 
 /// En dessous, on solliciterait trop le site Rewards (une actualisation lit une dizaine de pages).
 pub const MIN_REFRESH_MINUTES: u32 = 5;
+/// Rechercher une mise à jour plus souvent n'apporte rien : les versions sortent au plus
+/// quelques fois par jour.
+pub const MIN_UPDATE_CHECK_MINUTES: u32 = 15;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -55,6 +62,8 @@ impl Default for Settings {
             remind_streaks: true,
             subscription: Subscription::None,
             auto_check_updates: true,
+            update_check_interval_minutes: 360,
+            auto_install_updates: false,
             refresh_interval_minutes: 30,
         }
     }
@@ -64,6 +73,13 @@ impl Settings {
     pub fn reminder_time(&self) -> NaiveTime {
         NaiveTime::parse_from_str(&self.reminder_time, "%H:%M")
             .unwrap_or_else(|_| NaiveTime::from_hms_opt(19, 0, 0).unwrap())
+    }
+
+    pub fn update_check_interval(&self) -> std::time::Duration {
+        let minutes = self
+            .update_check_interval_minutes
+            .max(MIN_UPDATE_CHECK_MINUTES);
+        std::time::Duration::from_secs(u64::from(minutes) * 60)
     }
 
     /// Délai entre deux actualisations automatiques, `None` si elles sont désactivées.

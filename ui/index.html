@@ -76,6 +76,8 @@
               <h2>Quêtes Xbox</h2>
               <button class="btn" id="open-xbox">Ouvrir l'app Xbox</button>
             </div>
+            <div id="xbox-live" class="xbox-live"></div>
+            <div id="xbox-manual">
             <div class="xbox">
               <div class="xbox-today">
                 <div id="xbox-today-state"></div>
@@ -101,7 +103,8 @@
                 </div>
               </div>
             </div>
-            <p class="muted small">Microsoft ne publie pas l'avancement des quêtes Xbox : ce suivi repose sur ce que vous cochez ici. Les points se réclament dans le Rewards Hub de l'app Xbox.</p>
+            <p class="muted small">Suivi manuel : sans connexion Xbox Live, l'avancement repose sur ce que vous cochez ici. Les points se réclament dans le Rewards Hub de l'app Xbox.</p>
+            </div>
           </article>
 
           <article class="panel wide" id="punch-panel" hidden>
@@ -223,8 +226,13 @@
             <span></span>
             <div><button class="btn" id="check-update">Rechercher une mise à jour</button> <span class="muted small" id="update-status"></span></div>
             <span></span>
-            <label class="check"><input type="checkbox" id="auto-update"> Rechercher automatiquement (au démarrage puis toutes les 6 heures)</label>
+            <label class="check"><input type="checkbox" id="auto-update"> Rechercher automatiquement, au démarrage puis à intervalle régulier</label>
+            <label for="update-interval">Rechercher toutes les</label>
+            <div class="inline-field"><input type="number" id="update-interval" min="15" max="10080" step="1"> minutes</div>
+            <span></span>
+            <label class="check"><input type="checkbox" id="auto-install"> Installer automatiquement les mises à jour, puis redémarrer</label>
           </div>
+          <p class="muted small">L'installation automatique n'a lieu que lorsque la fenêtre est fermée (application dans la zone de notification), pour ne pas vous interrompre. Si la fenêtre est ouverte, une bannière propose la mise à jour. Minimum : 15 minutes entre deux recherches.</p>
           <div id="update-box" class="update-box" hidden>
             <b id="update-title"></b>
             <p id="update-notes" class="muted small"></p>

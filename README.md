@@ -10,10 +10,11 @@ Application Windows (Rust + Tauri 2) qui suit vos points Microsoft Rewards et vo
 - Quêtes suivies : une étoile sur chaque quête pour la retrouver, avec toutes ses étapes, dans une page dédiée.
 - Actualisation automatique des points, séries et quêtes toutes les N minutes (réglable, 30 par défaut).
 - Récompenses par jeu : recherche d'un jeu (ex. Sea of Thieves) pour voir les quêtes en cours qui le concernent (cartes à poinçonner avec leurs étapes, lien vers la page de la quête) et les articles du catalogue d'échange (prix, points manquants).
-- Suivi des quêtes Xbox : jeu quotidien coché à la main, bonus hebdomadaire (5 jours), jeux différents du mois pour les packs 4 et 8 jeux.
+- Quêtes Xbox réelles (expérimental) : connexion Xbox Live avec l'inscription d'application « Rewards Autoplay », puis lecture du Rewards Hub de l'app Xbox (`xgrant.xboxlive.com/…/programInfo`, format documenté par le projet xau-mobile) : quêtes du jour, bonus hebdomadaires PC et console, application mobile, packs et points à réclamer. Le jeton de rafraîchissement est rangé dans le gestionnaire d'identifiants Windows.
+- Suivi manuel des quêtes Xbox (sans connexion Xbox Live) : jeu quotidien coché à la main, bonus hebdomadaire (5 jours), jeux différents du mois pour les packs 4 et 8 jeux.
 - Mode **Rappels** : une notification par jour à l'heure choisie, avec ce qu'il reste à faire, dont les séries dont l'étape du jour n'est pas faite.
 - Zone de notification : fermer la fenêtre ne quitte pas l'application. Démarrage avec Windows en option.
-- Mise à jour depuis l'application (Paramètres › Mises à jour, ou menu de l'icône).
+- Mise à jour depuis l'application (Paramètres › Mises à jour, ou menu de l'icône), avec recherche automatique à intervalle réglable et installation automatique en option.
 
 Le mode **Automatique** (lancement des jeux installés) n'est pas encore disponible. Le règlement Microsoft Rewards interdit les outils automatisés pour gagner des points : un compte qui l'utilise risque une suspension.
 
@@ -46,6 +47,7 @@ Structure :
 |---|---|
 | `src-tauri/src/lib.rs` | Démarrage, plugins, commandes appelées par l'interface |
 | `src-tauri/src/rewards.rs` | Lecture du tableau de bord Rewards (points, activités, quêtes) |
+| `src-tauri/src/xbox.rs` | Connexion Xbox Live et quêtes du Rewards Hub de l'app Xbox (expérimental) |
 | `src-tauri/src/streaks.rs` | Séries, tampons bonus et compteur de série |
 | `src-tauri/src/flight.rs` | Extraction des données intégrées aux pages Next.js du site Rewards |
 | `src-tauri/src/catalog.rs` | Catalogue d'échange, lu dans la page rewards.bing.com/redeem/shop |

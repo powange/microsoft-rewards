@@ -7,6 +7,7 @@ mod store;
 mod streaks;
 mod tray;
 mod updater;
+mod xbox;
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -37,6 +38,7 @@ pub struct AppState {
     pub notified_update: Mutex<Option<String>>,
     /// Dernière actualisation des données, manuelle ou automatique.
     pub last_refresh: Mutex<Option<Instant>>,
+    pub xbox: xbox::XboxState,
 }
 
 pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
@@ -140,6 +142,33 @@ fn xbox_progress(state: State<AppState>) -> XboxProgress {
 fn set_xbox_today(state: State<AppState>, game: Option<String>) -> XboxProgress {
     state.store.set_xbox_today(game);
     state.store.xbox_progress()
+}
+
+#[tauri::command]
+fn xbox_status(app: AppHandle) -> xbox::XboxStatus {
+    xbox::status(&app)
+}
+
+/// Doit rester `async` : la fenêtre de connexion est créée ici (voir `login`).
+#[tauri::command]
+async fn xbox_login(app: AppHandle) -> Result<(), String> {
+    xbox::open_login(&app).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn xbox_logout(app: AppHandle) {
+    xbox::logout(&app);
+}
+
+/// Quêtes Xbox ; les données de moins de 5 minutes sont reprises du cache sauf si `force`.
+#[tauri::command]
+async fn xbox_rewards(app: AppHandle, force: bool) -> Result<xbox::XboxRewards, String> {
+    if !force {
+        if let Some(rewards) = xbox::cached(&app, Duration::from_secs(300)) {
+            return Ok(rewards);
+        }
+    }
+    xbox::refresh(&app).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -263,6 +292,7 @@ pub fn run() {
                 catalog: Mutex::new(None),
                 notified_update: Mutex::new(None),
                 last_refresh: Mutex::new(None),
+                xbox: xbox::XboxState::default(),
             });
             tray::create(app.handle())?;
             if !std::env::args().any(|arg| arg == MINIMIZED_ARG) {
@@ -292,6 +322,10 @@ pub fn run() {
             set_xbox_today,
             followed_quests,
             follow_quest,
+            xbox_status,
+            xbox_login,
+            xbox_logout,
+            xbox_rewards,
             send_test_reminder,
             autostart_enabled,
             set_autostart,

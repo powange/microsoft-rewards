@@ -183,6 +183,17 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .inline-field { display: flex; align-items: center; gap: 8px; }
 .inline-field input { width: 90px; }
 
+.xbox-live { display: grid; gap: 10px; margin-bottom: 14px; }
+.xbox-live:empty { display: none; }
+.xbox-connect { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 12px 14px; border: 1px dashed var(--line); border-radius: 8px; }
+.xbox-connect > div { display: grid; gap: 4px; max-width: 60ch; }
+.xbox-live-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.xbox-group { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 6px 0 0; }
+.error-text { color: var(--danger); }
+.state.failed { border-color: var(--danger); }
+.list li.locked .title { color: var(--muted); }
+.list li.locked > .lock { width: 16px; height: 16px; margin-top: 2px; color: var(--muted); }
+
 .choices { display: grid; gap: 10px; }
 .choice { display: grid; grid-template-columns: 20px 1fr; gap: 8px; align-items: start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
 .choice input { margin-top: 3px; }

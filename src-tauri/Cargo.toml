@@ -1,6 +1,6 @@
 [package]
 name = "rewards-autoplay"
-version = "0.2.5"
+version = "0.2.6"
 description = "Suivi Microsoft Rewards et rappels des quêtes Xbox"
 authors = ["powange"]
 edition = "2021"
@@ -27,6 +27,10 @@ tokio = { version = "1", features = ["time", "sync"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2"
 thiserror = "2"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
+keyring = { version = "3", features = ["windows-native"] }
 log = "0.4"
 tauri-plugin-log = "2"
 

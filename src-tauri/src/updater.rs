@@ -30,9 +30,31 @@ pub async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<Option<UpdateInfo>,
 }
 
 /// Vérification périodique : prévient une seule fois par version trouvée.
-pub async fn background_check<R: Runtime>(app: &AppHandle<R>) {
+///
+/// Avec `auto_install`, la mise à jour est installée seule (puis l'application redémarre),
+/// mais seulement si la fenêtre est fermée, pour ne pas interrompre l'utilisateur.
+pub async fn background_check<R: Runtime>(app: &AppHandle<R>, auto_install: bool) {
     match check(app).await {
         Ok(Some(info)) => {
+            let window_open = app
+                .get_webview_window("main")
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(false);
+            if auto_install && !window_open {
+                log::info!("Installation automatique de la version {}", info.version);
+                crate::notify(
+                    app,
+                    "Mise à jour en cours",
+                    &format!(
+                        "Rewards Autoplay installe la version {} et va redémarrer.",
+                        info.version
+                    ),
+                );
+                match install(app).await {
+                    Ok(()) => return,
+                    Err(err) => log::warn!("Installation automatique impossible : {err}"),
+                }
+            }
             let _ = app.emit("update-available", &info);
             let state = app.state::<crate::AppState>();
             let mut notified = state.notified_update.lock().unwrap();
