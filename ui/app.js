@@ -67,17 +67,26 @@ function openUrl(url) {
   invoke("open_url", { url }).catch((err) => toast(String(err)));
 }
 
-/** Délai avant l'actualisation qui suit l'ouverture d'une tâche, le temps que Microsoft la valide. */
+/** Délai avant l'actualisation qui suit une page ouverte dans la fenêtre Rewards. */
 const TASK_REFRESH_DELAY_MS = 10_000;
+const EARN_URL = "https://rewards.bing.com/earn";
 let taskRefreshTimer;
 
-/** Ouvre une tâche (étape de quête, activité, série) puis actualise 10 secondes plus tard. */
+/**
+ * Ouvre une tâche dans la fenêtre Rewards de l'application, déjà connectée au compte.
+ * C'est le clic sur le site qui valide une activité : ouvrir son lien ailleurs ne rapporte rien.
+ */
 function openTask(url) {
-  openUrl(url);
+  invoke("open_rewards_site", { url }).catch((err) => toast(String(err)));
+}
+
+// Chaque page chargée dans la fenêtre Rewards (un clic sur une activité, une étape…)
+// déclenche une actualisation 10 secondes plus tard ; la fermeture de la fenêtre aussi.
+listen("rewards-site-navigated", () => {
   clearTimeout(taskRefreshTimer);
   taskRefreshTimer = setTimeout(refresh, TASK_REFRESH_DELAY_MS);
-  toast("Actualisation automatique dans 10 secondes.");
-}
+});
+listen("rewards-site-closed", () => refresh());
 
 /** Vignette à gauche du titre, comme sur le site Rewards et dans l'app Xbox. */
 function withThumb(imageUrl, ...children) {
@@ -89,7 +98,7 @@ function withThumb(imageUrl, ...children) {
 
 function activityItem(activity) {
   const title = activity.url
-    ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(activity.url); } }, activity.title)
+    ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(EARN_URL); } }, activity.title)
     : activity.title;
   return h("li", { class: activity.complete ? "done" : "" },
     h("span", { class: `state${activity.complete ? " done" : ""}`, "aria-label": activity.complete ? "Terminé" : "À faire" }),
@@ -132,12 +141,13 @@ function renderSummary(summary) {
   $("daily-set").replaceChildren(...(daily.length ? daily.map(activityItem)
     : [h("li", { class: "empty" }, "Pas d'activités du jour pour le moment.")]));
 
+  // À faire d'abord (Xbox puis les plus payantes), les activités terminées à la fin.
   const todo = summary.more.filter((a) => !a.complete);
-  const done = summary.more.length - todo.length;
+  const done = summary.more.filter((a) => a.complete);
   todo.sort((a, b) => Number(b.xbox) - Number(a.xbox) || b.points - a.points);
-  $("more").replaceChildren(...(todo.length ? todo.map(activityItem)
-    : [h("li", { class: "empty" }, "Toutes les autres activités sont terminées.")]));
-  $("more-done").textContent = done ? `${done} activité${done > 1 ? "s" : ""} déjà terminée${done > 1 ? "s" : ""}.` : "";
+  $("more").replaceChildren(...(summary.more.length ? [...todo, ...done].map(activityItem)
+    : [h("li", { class: "empty" }, "Aucune autre activité pour le moment.")]));
+  $("more-done").textContent = todo.length || !done.length ? "" : "Toutes les autres activités sont terminées.";
 
   const cards = summary.punchCards;
   $("punch-panel").hidden = cards.length === 0;
@@ -470,12 +480,12 @@ function lockIcon() {
   return svg;
 }
 
-function stepItem(step) {
+function stepItem(step, card) {
   const icon = step.locked
     ? lockIcon()
     : h("span", { class: `state${step.complete ? " done" : ""}`, "aria-label": step.complete ? "Terminée" : "À faire" });
   const button = step.url && step.linkText && !step.complete
-    ? h("button", { class: "btn small", type: "button", disabled: step.locked, onclick: () => openTask(step.url) }, `${step.linkText} ↗`)
+    ? h("button", { class: "btn small", type: "button", disabled: step.locked, onclick: () => openTask(card?.url ?? step.url) }, `${step.linkText} ↗`)
     : null;
   return h("li", { class: step.complete ? "done" : step.locked ? "locked" : "" },
     icon,
@@ -497,7 +507,7 @@ function questItem(card, { open = false } = {}) {
           card.imageUrl ? h("img", { src: card.imageUrl, alt: "", loading: "lazy" }) : null,
           h("div", { class: "quest-text" },
             card.description ? h("p", { class: "desc" }, card.description) : null,
-            card.steps.length ? h("ol", { class: "quest-steps" }, card.steps.map(stepItem)) : null,
+            card.steps.length ? h("ol", { class: "quest-steps" }, card.steps.map((step) => stepItem(step, card))) : null,
             card.url ? h("button", { class: "btn small ghost", type: "button", onclick: () => openTask(card.url) }, "Ouvrir la quête sur Microsoft Rewards ↗") : null)))
     : null;
   return h("li", { class: card.complete ? "done" : "" },
@@ -599,7 +609,7 @@ function catalogItem(item) {
   return h("li", {},
     item.imageUrl ? h("img", { src: item.imageUrl, alt: "", loading: "lazy" }) : h("span", { class: "img" }),
     h("div", {},
-      h("div", { class: "title" }, h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(item.url); } }, item.title)),
+      h("div", { class: "title" }, h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(item.url); } }, item.title)),
       h("div", { class: "price" }, `${numberFormat.format(item.price)} pts`,
         item.originalPrice > item.price ? h("span", { class: "old" }, `${numberFormat.format(item.originalPrice)} pts`) : null),
       status));
@@ -674,7 +684,7 @@ async function saveSettings() {
     notifyUnlocks: $("notify-unlocks").checked,
     subscription: $("subscription").value,
     autoCheckUpdates: $("auto-update").checked,
-    updateCheckIntervalMinutes: clampMinutesInput("update-interval", 15, 10080),
+    updateCheckIntervalMinutes: clampMinutesInput("update-interval", 1, 10080),
     autoInstallUpdates: $("auto-install").checked,
     refreshIntervalMinutes: refreshMinutesInput(),
   };

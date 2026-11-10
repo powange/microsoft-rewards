@@ -4,7 +4,7 @@
 //! la connexion terminée. Cette fenêtre n'a accès à aucune commande de l'application.
 
 use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use url::Url;
 
 const LOGIN_LABEL: &str = "login";
@@ -54,4 +54,39 @@ pub async fn logout<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
+}
+
+const SITE_LABEL: &str = "rewards-site";
+
+/// Ouvre une page du site Rewards dans une fenêtre de l'application, connectée au compte.
+///
+/// C'est le site qui valide une activité au moment du clic (le lien de destination seul ne
+/// rapporte rien, il porte souvent `rnoreward=1`) : l'utilisateur clique donc sur l'activité
+/// dans cette fenêtre, comme sur le site. Chaque page chargée et la fermeture de la fenêtre
+/// sont signalées à l'interface, qui actualise les données.
+pub fn open_site<R: Runtime>(app: &AppHandle<R>, url: Url) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(SITE_LABEL) {
+        window.navigate(url)?;
+        window.unminimize()?;
+        window.show()?;
+        return window.set_focus();
+    }
+    let handle = app.clone();
+    let window = WebviewWindowBuilder::new(app, SITE_LABEL, WebviewUrl::External(url))
+        .title("Microsoft Rewards")
+        .inner_size(1100.0, 820.0)
+        .center()
+        .on_page_load(move |_, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                let _ = handle.emit("rewards-site-navigated", payload.url().as_str());
+            }
+        })
+        .build()?;
+    let handle = app.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::Destroyed = event {
+            let _ = handle.emit("rewards-site-closed", ());
+        }
+    });
+    Ok(())
 }

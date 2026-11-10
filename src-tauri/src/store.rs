@@ -50,9 +50,8 @@ pub struct Settings {
 
 /// En dessous, on solliciterait trop le site Rewards (une actualisation lit une dizaine de pages).
 pub const MIN_REFRESH_MINUTES: u32 = 5;
-/// Rechercher une mise à jour plus souvent n'apporte rien : les versions sortent au plus
-/// quelques fois par jour.
-pub const MIN_UPDATE_CHECK_MINUTES: u32 = 15;
+/// Le fichier de mise à jour est petit et hébergé par GitHub : une recherche par minute reste raisonnable.
+pub const MIN_UPDATE_CHECK_MINUTES: u32 = 1;
 
 impl Default for Settings {
     fn default() -> Self {

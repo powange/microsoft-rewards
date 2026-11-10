@@ -252,6 +252,17 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
     updater::install(&app).await
 }
 
+/// Ouvre une page du site Rewards (activité, quête, série) dans la fenêtre intégrée.
+/// Doit rester `async` : la fenêtre est créée ici (voir `login`).
+#[tauri::command]
+async fn open_rewards_site(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = url::Url::parse(&url).map_err(|e| e.to_string())?;
+    if parsed.scheme() != "https" {
+        return Err(format!("Adresse non autorisée : {url}"));
+    }
+    auth::open_site(&app, parsed).map_err(|e| e.to_string())
+}
+
 /// Ouvre un lien dans le navigateur. Les liens viennent des pages Microsoft Rewards
 /// (boutons des quêtes vers Bing, YouTube, Spotify…) : seul le https est exigé.
 #[tauri::command]
@@ -365,6 +376,7 @@ pub fn run() {
             check_update,
             install_update,
             open_url,
+            open_rewards_site,
             open_xbox_app,
             open_logs,
             app_info,

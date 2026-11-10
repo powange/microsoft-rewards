@@ -232,11 +232,11 @@
             <span></span>
             <label class="check"><input type="checkbox" id="auto-update"> Rechercher automatiquement, au démarrage puis à intervalle régulier</label>
             <label for="update-interval">Rechercher toutes les</label>
-            <div class="inline-field"><input type="number" id="update-interval" min="15" max="10080" step="1"> minutes</div>
+            <div class="inline-field"><input type="number" id="update-interval" min="1" max="10080" step="1"> minutes</div>
             <span></span>
             <label class="check"><input type="checkbox" id="auto-install"> Installer automatiquement les mises à jour, puis redémarrer</label>
           </div>
-          <p class="muted small">L'installation automatique n'a lieu que lorsque la fenêtre est fermée (application dans la zone de notification), pour ne pas vous interrompre. Si la fenêtre est ouverte, une bannière propose la mise à jour. Minimum : 15 minutes entre deux recherches.</p>
+          <p class="muted small">L'installation automatique n'a lieu que lorsque la fenêtre est fermée (application dans la zone de notification), pour ne pas vous interrompre. Si la fenêtre est ouverte, une bannière propose la mise à jour.</p>
           <div id="update-box" class="update-box" hidden>
             <b id="update-title"></b>
             <p id="update-notes" class="muted small"></p>
