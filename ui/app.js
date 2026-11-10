@@ -111,7 +111,7 @@ function activityItem(activity) {
         activity.locked ? h("span", { class: "tag lock" }, "Verrouillé") : null),
       activity.description ? h("div", { class: "desc" }, activity.description) : null,
       activity.note ? h("div", { class: "desc" }, activity.note) : null),
-    h("span", { class: "pts" }, `${activity.points} pts`));
+    h("span", { class: "pts" }, activity.points ? `${activity.points} pts` : ""));
 }
 
 function renderSummary(summary) {
@@ -160,8 +160,8 @@ function renderSummary(summary) {
   const done = others.filter((a) => a.complete);
   todo.sort((a, b) => Number(b.xbox) - Number(a.xbox) || b.points - a.points);
   $("more").replaceChildren(...(others.length ? [...todo, ...done].map(activityItem)
-    : [h("li", { class: "empty" }, "Aucune autre activité pour le moment.")]));
-  $("more-done").textContent = todo.length || !done.length ? "" : "Toutes les autres activités sont terminées.";
+    : [h("li", { class: "empty" }, "Aucune activité pour le moment.")]));
+  $("more-done").textContent = todo.length || !done.length ? "" : "Toutes les activités de cette section sont terminées.";
 
   const cards = summary.punchCards;
   $("punch-panel").hidden = cards.length === 0;

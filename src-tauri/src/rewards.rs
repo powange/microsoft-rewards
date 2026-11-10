@@ -310,9 +310,20 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
         .map(|(done, left)| done + left);
 
     let (daily_set, daily_ids) = daily_set(&earn);
-    let mut more: Vec<Activity> = Vec::new();
+    // « Continuer à gagner » : la liste exacte du site, cartes à 0 point comprises. Sans elle
+    // (ancien format), on retombe sur tous les objets portant un `offerId`.
+    let mut more = more_activities(&earn);
+    // Les activités du jour ont leur propre liste.
+    more.retain(|a| !daily_ids.contains(&a.id));
+    let from_section = !more.is_empty();
     for object in flight::objects_with_key(&earn, "offerId") {
-        let Some(activity) = activity(&object).or_else(|| card_activity(&object, &earn)) else {
+        // Les cartes dont le contenu n'est que dans le rendu (« Explorer sur Bing ») s'ajoutent.
+        let candidate = if from_section {
+            card_activity(&object, &earn)
+        } else {
+            activity(&object).or_else(|| card_activity(&object, &earn))
+        };
+        let Some(activity) = candidate else {
             continue;
         };
         let id = activity.id.to_lowercase();
@@ -427,14 +438,47 @@ fn daily_set(text: &str) -> (Vec<Activity>, HashSet<String>) {
     (today_items, ids)
 }
 
+/// Cartes de la section « Continuer à gagner » : `"activityCards":[…]`. Une carte verrouillée
+/// porte une clé `unlockCriteria` (`newLevel2`…) dont le texte français est dans la page.
+fn more_activities(text: &str) -> Vec<Activity> {
+    let Some(Value::Array(cards)) = flight::values_after_key(text, "activityCards")
+        .into_iter()
+        .find(Value::is_array)
+    else {
+        return Vec::new();
+    };
+    cards
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|card| {
+            let mut activity = activity_with(card, true)?;
+            activity.note = card
+                .get("unlockCriteria")
+                .and_then(Value::as_str)
+                .filter(|key| !key.is_empty() && !key.starts_with('$'))
+                .and_then(|key| {
+                    flight::values_after_key(text, key)
+                        .into_iter()
+                        .find_map(|v| v.as_str().map(str::to_string))
+                });
+            Some(activity)
+        })
+        .collect()
+}
+
 fn activity(object: &Map<String, Value>) -> Option<Activity> {
+    activity_with(object, false)
+}
+
+/// `allow_zero` garde les cartes sans points (annonces, offres partenaires).
+fn activity_with(object: &Map<String, Value>, allow_zero: bool) -> Option<Activity> {
     let title = object
         .get("title")?
         .as_str()
         .filter(|t| !t.is_empty())?
         .to_string();
     let points = object.get("points").and_then(as_int).unwrap_or(0);
-    if points <= 0 {
+    if points < 0 || (points == 0 && !allow_zero) {
         return None;
     }
     let id = object
@@ -956,6 +1000,8 @@ mod tests {
         let today = Local::now().format("%m/%d/%Y");
         format!(
             r#"5:{{"balance":3345,"level":1}}
+c:{{"UnlockCriteria":{{"newLevel2":"Niveau Argent requis","tomorrow":"Déverrouille demain"}}}}
+55:{{"activityCards":[{{"offerId":"WW_Rewards_locked_level2_offer1","title":"À la découverte de Mars","points":15,"isCompleted":false,"isLocked":true,"unlockCriteria":"newLevel2","destination":"https://rewards.bing.com/level"}},{{"offerId":"Xbox_offer","title":"Jouez sur Xbox","points":20,"isCompleted":false,"unlockCriteria":"$undefined","destination":"https://www.xbox.com"}},{{"offerId":"FRstar_Encourage_Redemption","title":"Il est temps de racheter !","points":0,"isCompleted":false,"isPromotional":true}},{{"offerId":"Global_DailySet_Child1","title":"Événements musicaux","points":10}}]}}
 6b:["$","$L59",null,{{"name":"Pierre Comble","profilePictureUrl":"https://storage.live.com/users/x/myprofile"}}]
 6:{{"memberTitle":"Membre"}}
 7:{{"pointsCounters":{{"dailyOffer":101,"pc":{{"max":15,"progress":9,"originalMax":15}},"totalPoints":110,"boostActivated":false}}}}
@@ -1009,10 +1055,14 @@ mod tests {
             [
                 "WW_Rewards_locked_level2_offer1",
                 "Xbox_offer",
+                "FRstar_Encourage_Redemption",
                 "ENUS_bankaccounts_exploreonbing_activation_Evergreen"
             ]
         );
-        let explore = &s.more[2];
+        assert_eq!(s.more[0].note.as_deref(), Some("Niveau Argent requis"));
+        assert_eq!(s.more[1].note, None);
+        assert_eq!(s.more[2].points, 0, "les cartes sans points sont gardées");
+        let explore = &s.more[3];
         assert_eq!(explore.title, "Banquez plus intelligemment");
         assert_eq!(
             explore.description,
