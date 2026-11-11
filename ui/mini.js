@@ -55,7 +55,10 @@ function render(summary, goal) {
     const missing = Math.max(0, goal.price - summary.availablePoints);
     parts.push(h("div", { class: "mini-section" }, "Objectif"));
     parts.push(row(goal.title, missing ? `encore ${numberFormat.format(missing)} pts` : "atteint ✓", !missing));
-    parts.push(h("div", { class: "bar" }, h("i", { style: `width:${Math.min(100, (summary.availablePoints / goal.price) * 100)}%` })));
+    // Largeur réglée par script : la politique de sécurité peut bloquer l'attribut style.
+    const fill = h("i");
+    fill.style.width = `${Math.min(100, (summary.availablePoints / goal.price) * 100)}%`;
+    parts.push(h("div", { class: "bar" }, fill));
   }
   body.replaceChildren(...parts);
 }

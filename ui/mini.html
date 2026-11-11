@@ -5,25 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Rewards Autoplay</title>
   <link rel="stylesheet" href="styles.css">
-  <style>
-    html, body { height: 100%; }
-    body.mini { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
-    .mini-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
-    .mini-points { font: 600 28px/1.1 var(--font-display); font-variant-numeric: tabular-nums; }
-    .mini-points small { font: 400 13px var(--font); color: var(--muted); margin-left: 4px; }
-    .mini-body { flex: 1; overflow: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
-    .mini-row { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; }
-    .mini-row span { min-width: 0; }
-    .mini-row b { font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
-    .mini-row.ok b { color: var(--accent); }
-    .mini-section { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
-    /* Pas d'animation : la fenêtre se prépare cachée, et WebView2 peut y geler les transitions. */
-    .mini .bar i { transition: none; }
-    .mini-foot { padding: 12px 16px; border-top: 1px solid var(--line); display: flex; gap: 8px; }
-    .mini-foot .primary { flex: 1; }
-    .icon-btn { border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 16px; }
-    .icon-btn:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  </style>
+  <link rel="stylesheet" href="mini.css">
 </head>
 <body class="mini">
   <div class="mini-head">
