@@ -89,8 +89,8 @@ let taskRefreshTimer;
  * Avec `click` (le lien de la tâche), l'application clique elle-même sur la tâche une fois la
  * page chargée : la recherche Bing, le quiz… s'ouvrent alors directement, et sont comptés.
  */
-function openTask(url, click = null, query = null) {
-  invoke("open_rewards_site", { url, click, query }).catch((err) => toast(String(err)));
+function openTask(url, click = null, query = null, title = null) {
+  invoke("open_rewards_site", { url, click, clickTitle: click ? title : null, query }).catch((err) => toast(String(err)));
 }
 
 // Chaque page chargée dans la fenêtre Rewards (un clic sur une activité, une étape…)
@@ -132,7 +132,7 @@ function activityPage(activity) {
 
 function activityItem(activity) {
   const title = activity.url
-    ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(activityPage(activity), activity.complete || activity.locked ? null : activity.url, activity.searchQuery); } }, activity.title)
+    ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(activityPage(activity), activity.complete || activity.locked ? null : activity.url, activity.searchQuery, activity.title); } }, activity.title)
     : activity.title;
   return h("li", { class: activity.complete ? "done" : "" },
     h("span", { class: `state${activity.complete ? " done" : ""}`, "aria-label": activity.complete ? "Terminé" : "À faire" }),
@@ -233,7 +233,7 @@ function renderSearchesToDo(summary) {
     h("span", { class: "state", "aria-label": "À faire" }),
     withThumb(t.imageUrl,
       h("div", { class: "title" },
-        t.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(t.url, t.click, t.query); } }, t.title) : t.title,
+        t.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(t.url, t.click, t.query, t.title); } }, t.title) : t.title,
         " ", kindTag(t.kind)),
       t.context ? h("div", { class: "desc" }, t.context) : null),
     h("span", { class: "pts" }, t.points ? `${t.points} pts` : "")));
@@ -579,7 +579,7 @@ function stepItem(step, card) {
     ? lockIcon()
     : h("span", { class: `state${step.complete ? " done" : ""}`, "aria-label": step.complete ? "Terminée" : "À faire" });
   const button = step.url && step.linkText && !step.complete
-    ? h("button", { class: "btn small", type: "button", disabled: step.locked, onclick: () => openTask(card?.url ?? step.url, card?.url ? step.url : null, step.searchQuery) }, `${step.linkText} ↗`)
+    ? h("button", { class: "btn small", type: "button", disabled: step.locked, onclick: () => openTask(card?.url ?? step.url, card?.url ? step.url : null, step.searchQuery, step.title) }, `${step.linkText} ↗`)
     : null;
   return h("li", { class: step.complete ? "done" : step.locked ? "locked" : "" },
     icon,

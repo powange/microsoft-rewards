@@ -284,13 +284,14 @@ async fn open_rewards_site(
     app: AppHandle,
     url: String,
     click: Option<String>,
+    click_title: Option<String>,
     query: Option<String>,
 ) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|e| e.to_string())?;
     if parsed.scheme() != "https" {
         return Err(format!("Adresse non autorisée : {url}"));
     }
-    auth::open_site(&app, parsed, click, query).map_err(|e| e.to_string())
+    auth::open_site(&app, parsed, click, click_title, query).map_err(|e| e.to_string())
 }
 
 /// Ouvre un lien dans le navigateur. Les liens viennent des pages Microsoft Rewards

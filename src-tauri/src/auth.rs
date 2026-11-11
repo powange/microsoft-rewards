@@ -61,8 +61,8 @@ pub async fn logout<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
 const SITE_LABEL: &str = "rewards-site";
 
-/// Lien de la tâche sur laquelle cliquer au prochain chargement de la fenêtre Rewards.
-static PENDING_CLICK: Mutex<Option<String>> = Mutex::new(None);
+/// Lien et titre de la tâche sur laquelle cliquer au prochain chargement de la fenêtre Rewards.
+static PENDING_CLICK: Mutex<Option<(String, Option<String>)>> = Mutex::new(None);
 
 /// Script injecté dans la page Rewards : attend que la tâche dont le lien est `target` soit
 /// affichée et active (React branché), puis clique dessus comme l'utilisateur le ferait.
@@ -95,27 +95,50 @@ const CLICK_SCRIPT: &str = r#"(() => {
     const key = Object.keys(el).find((k) => k.startsWith("__reactProps"));
     return key ? el[key] : null;
   };
+  // Plusieurs éléments peuvent avoir le même lien : toutes les cartes « Explorer sur Bing »
+  // mènent à l'accueil de Bing, plusieurs étapes d'une quête aussi. On garde celui qui
+  // contient le titre de la tâche, dans son propre bloc. Si l'ambiguïté reste, on ne clique pas.
+  const clean = (s) => (s || "").replace(/[\u200b\s]+/g, " ").trim().toLowerCase();
+  const wantTitle = clean(__TITLE__);
+  const owns = (el, all) => {
+    if (!wantTitle) return false;
+    for (let n = el, depth = 0; n && depth < 8; n = n.parentElement, depth++) {
+      if (all.some((o) => o !== el && n.contains(o))) return false;
+      if (clean(n.textContent).includes(wantTitle)) return true;
+    }
+    return false;
+  };
+  const pick = (els) => {
+    const list = [...new Set(els)];
+    if (!list.length) return null;
+    const mine = list.filter((el) => owns(el, list));
+    if (mine.length) return mine[0];
+    return list.length === 1 ? list[0] : null;
+  };
+  const result = (el) => (el ? { el, ready: Boolean(props(el)) } : null);
   const find = () => exact() || looseMatch();
   const looseMatch = () => {
     if (!wantLoose) return null;
-    const hits = [...document.querySelectorAll("a[href]")]
-      .filter((el) => loose(el.getAttribute("href")) === wantLoose);
-    return hits.length === 1 ? { el: hits[0], ready: Boolean(props(hits[0])) } : null;
+    return result(pick([...document.querySelectorAll("a[href]")]
+      .filter((el) => loose(el.getAttribute("href")) === wantLoose)));
   };
   const exact = () => {
-    for (const el of document.querySelectorAll("a[href], button, [role=button], [role=link]")) {
-      const p = props(el);
-      const link = el.getAttribute("href") || (p && (p.href || p.destination));
-      if (link && norm(link) === want) return { el, ready: Boolean(p) };
-    }
-    for (const el of document.querySelectorAll("*")) {
-      const p = props(el);
-      const link = p && (p.href || p.destination);
-      if (typeof link === "string" && norm(link) === want) {
-        return { el: el.querySelector("a, button, [role=button]") || el, ready: true };
-      }
-    }
-    return null;
+    const direct = [...document.querySelectorAll("a[href], button, [role=button], [role=link]")]
+      .filter((el) => {
+        const p = props(el);
+        const link = el.getAttribute("href") || (p && (p.href || p.destination));
+        return link && norm(link) === want;
+      });
+    if (direct.length) return result(pick(direct));
+    const nested = [...document.querySelectorAll("*")]
+      .filter((el) => {
+        const p = props(el);
+        const link = p && (p.href || p.destination);
+        return typeof link === "string" && norm(link) === want;
+      })
+      .map((el) => el.querySelector("a, button, [role=button]") || el);
+    const el = pick(nested);
+    return el ? { el, ready: true } : null;
   };
   const started = Date.now();
   const tick = () => {
@@ -231,9 +254,10 @@ pub fn open_site<R: Runtime>(
     app: &AppHandle<R>,
     url: Url,
     click: Option<String>,
+    click_title: Option<String>,
     query: Option<String>,
 ) -> tauri::Result<()> {
-    *PENDING_CLICK.lock().unwrap() = click;
+    *PENDING_CLICK.lock().unwrap() = click.map(|url| (url, click_title));
     *PENDING_QUERY.lock().unwrap() = query.filter(|q| !q.trim().is_empty());
     if let Some(window) = app.get_webview_window(SITE_LABEL) {
         window.navigate(url)?;
@@ -270,9 +294,13 @@ pub fn open_site<R: Runtime>(
             }
             let _ = handle.emit("rewards-site-navigated", payload.url().as_str());
             if payload.url().host_str() == Some("rewards.bing.com") {
-                if let Some(target) = PENDING_CLICK.lock().unwrap().take() {
+                if let Some((target, title)) = PENDING_CLICK.lock().unwrap().take() {
                     let target = serde_json::to_string(&target).unwrap_or_default();
-                    let _ = window.eval(CLICK_SCRIPT.replace("__TARGET__", &target));
+                    let title = serde_json::to_string(&title).unwrap_or_default();
+                    let script = CLICK_SCRIPT
+                        .replace("__TARGET__", &target)
+                        .replace("__TITLE__", &title);
+                    let _ = window.eval(script);
                 }
             }
             // Certains liens s'ouvrent dans la même fenêtre plutôt que dans une nouvelle.
