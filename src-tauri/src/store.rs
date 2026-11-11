@@ -40,6 +40,8 @@ pub struct Settings {
     pub notify_unlocks: bool,
     /// Notifier quand une quête pas terminée expire dans moins de 48 heures.
     pub notify_expiring: bool,
+    /// Notifier chaque nouvelle recherche Bing à faire ; un clic sur la notification la lance.
+    pub notify_new_searches: bool,
     pub subscription: Subscription,
     pub auto_check_updates: bool,
     /// Délai entre deux recherches de mise à jour, en minutes.
@@ -65,6 +67,7 @@ impl Default for Settings {
             remind_streaks: true,
             notify_unlocks: true,
             notify_expiring: true,
+            notify_new_searches: true,
             subscription: Subscription::None,
             auto_check_updates: true,
             update_check_interval_minutes: 360,
@@ -133,6 +136,8 @@ struct Persisted {
     goal: Option<Goal>,
     /// Alertes déjà envoyées (quête qui expire…), pour ne prévenir qu'une fois.
     sent_alerts: BTreeSet<String>,
+    /// Recherches Bing à faire lors de la dernière actualisation (`None` : jamais relevées).
+    known_searches: Option<BTreeSet<String>>,
 }
 
 /// Objectif d'échange : un article du catalogue Rewards.
@@ -310,6 +315,17 @@ impl Store {
             .iter()
             .map(|(d, b)| (*d, *b))
             .collect()
+    }
+
+    /// Remplace la liste des recherches à faire et renvoie la précédente (`None` la première fois).
+    pub fn swap_known_searches(&self, current: BTreeSet<String>) -> Option<BTreeSet<String>> {
+        let mut data = self.data.lock().unwrap();
+        if data.known_searches.as_ref() == Some(&current) {
+            return Some(current);
+        }
+        let previous = data.known_searches.replace(current);
+        self.save(&data);
+        previous
     }
 
     pub fn goal(&self) -> Option<Goal> {
@@ -511,6 +527,9 @@ mod tests {
         store.record_balance(day, 3050);
         store.record_balance(day - chrono::Duration::days(500), 10);
         assert_eq!(store.points_history(), vec![(day, 3050)]);
+        let searches: BTreeSet<String> = ["a#telescopes".to_string()].into();
+        assert!(store.swap_known_searches(searches.clone()).is_none());
+        assert_eq!(store.swap_known_searches(BTreeSet::new()), Some(searches));
         assert!(store.first_alert("expire#sot"));
         assert!(!store.reload().first_alert("expire#sot"));
         let _ = std::fs::remove_file(path);

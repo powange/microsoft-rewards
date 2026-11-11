@@ -1065,6 +1065,7 @@ async function saveSettings() {
     remindStreaks: $("remind-streaks").checked,
     notifyUnlocks: $("notify-unlocks").checked,
     notifyExpiring: $("notify-expiring").checked,
+    notifyNewSearches: $("notify-new-searches").checked,
     subscription: $("subscription").value,
     autoCheckUpdates: $("auto-update").checked,
     updateCheckIntervalMinutes: clampMinutesInput("update-interval", 1, 10080),
@@ -1084,6 +1085,7 @@ function renderSettings(settings) {
   $("remind-streaks").checked = settings.remindStreaks;
   $("notify-unlocks").checked = settings.notifyUnlocks;
   $("notify-expiring").checked = settings.notifyExpiring;
+  $("notify-new-searches").checked = settings.notifyNewSearches;
   $("subscription").value = settings.subscription;
   $("auto-update").checked = settings.autoCheckUpdates;
   $("update-interval").value = settings.updateCheckIntervalMinutes;
@@ -1120,7 +1122,7 @@ function refreshMinutesInput() {
   return minutes;
 }
 
-for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval", "mode-reminders"]) {
+for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval", "mode-reminders"]) {
   $(id).addEventListener("change", saveSettings);
 }
 

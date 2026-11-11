@@ -257,6 +257,35 @@ const FILL_SCRIPT: &str = r##"(() => {
   tick();
 })();"##;
 
+/// Tâche ouverte depuis une notification : les fenêtres se ferment d'elles-mêmes une fois la
+/// recherche Bing affichée.
+static AUTO_CLOSE: Mutex<bool> = Mutex::new(false);
+
+/// Délai entre l'affichage des résultats de la recherche et la fermeture des fenêtres : le
+/// temps que Bing enregistre la recherche pour Microsoft Rewards.
+const AUTO_CLOSE_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Page de résultats Bing chargée pour une tâche ouverte depuis une notification : ferme la
+/// fenêtre de recherche et la fenêtre Rewards quelques secondes plus tard.
+fn maybe_close_after_search<R: Runtime>(app: &AppHandle<R>, url: &Url) {
+    let host = url.host_str().unwrap_or_default();
+    let is_results = (host == "bing.com" || host == "www.bing.com")
+        && url.path().starts_with("/search")
+        && url.query_pairs().any(|(k, v)| k == "q" && !v.is_empty());
+    if !is_results || !std::mem::take(&mut *AUTO_CLOSE.lock().unwrap()) {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(AUTO_CLOSE_DELAY).await;
+        for (label, window) in app.webview_windows() {
+            if label.starts_with(SEARCH_LABEL) || label == SITE_LABEL {
+                let _ = window.close();
+            }
+        }
+    });
+}
+
 /// Remplit le champ de recherche si la page chargée est Bing et qu'un texte est en attente.
 fn fill_pending_query<R: Runtime>(window: &tauri::WebviewWindow<R>, url: &Url) {
     let host = url.host_str().unwrap_or_default();
@@ -311,6 +340,7 @@ fn open_search_window<R: Runtime>(
         }
         let _ = handle.emit("rewards-site-navigated", payload.url().as_str());
         fill_pending_query(&window, payload.url());
+        maybe_close_after_search(&handle, payload.url());
     })
     .build()
 }
@@ -330,7 +360,9 @@ pub fn open_site<R: Runtime>(
     click_title: Option<String>,
     query: Option<String>,
     guide: Option<GuideStep>,
+    auto_close: bool,
 ) -> tauri::Result<()> {
+    *AUTO_CLOSE.lock().unwrap() = auto_close;
     // Une tâche ouverte hors session guidée met fin à la session.
     *GUIDE.lock().unwrap() = guide;
     *PENDING_CLICK.lock().unwrap() = click.map(|url| (url, click_title));
@@ -406,6 +438,7 @@ pub fn open_site<R: Runtime>(
             }
             // Certains liens s'ouvrent dans la même fenêtre plutôt que dans une nouvelle.
             fill_pending_query(&window, payload.url());
+            maybe_close_after_search(window.app_handle(), payload.url());
         })
         .build()?;
     let handle = app.clone();

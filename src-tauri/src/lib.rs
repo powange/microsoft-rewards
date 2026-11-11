@@ -78,9 +78,93 @@ fn take_restart_minimized<R: Runtime>(app: &AppHandle<R>) -> bool {
         .unwrap_or(false)
 }
 
+/// Ce que fait un clic sur une notification.
+#[derive(Debug, Clone)]
+pub enum ClickAction {
+    /// Ouvre la fenêtre principale, éventuellement sur une vue (« today », « history »…).
+    OpenMain(Option<&'static str>),
+    /// Ouvre une tâche dans la fenêtre Rewards, clique dessus, puis referme les fenêtres une
+    /// fois la recherche Bing chargée.
+    OpenTask(TaskTarget),
+}
+
+/// Tâche à ouvrir : page du site, lien de la tâche à cliquer, titre pour la retrouver et
+/// texte à mettre dans le champ de recherche de Bing.
+#[derive(Debug, Clone)]
+pub struct TaskTarget {
+    pub page: String,
+    pub click: Option<String>,
+    pub title: String,
+    pub query: Option<String>,
+}
+
+/// Actions des notifications affichées, par identifiant de notification.
+static CLICK_ACTIONS: Mutex<Vec<(i32, ClickAction)>> = Mutex::new(Vec::new());
+static NEXT_NOTIFICATION_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+
+/// Notification dont un clic ouvre la fenêtre principale.
 pub fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
-    if let Err(err) = app.notification().builder().title(title).body(body).show() {
+    notify_with(app, title, body, ClickAction::OpenMain(None));
+}
+
+/// Notification dont un clic déclenche `action` (tant qu'elle est à l'écran : Windows ne
+/// signale pas les clics dans le centre de notifications).
+pub fn notify_with<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str, action: ClickAction) {
+    let id = NEXT_NOTIFICATION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    {
+        let mut actions = CLICK_ACTIONS.lock().unwrap();
+        actions.push((id, action));
+        // Une notification disparaît de l'écran en quelques secondes : inutile d'en garder beaucoup.
+        let excess = actions.len().saturating_sub(50);
+        actions.drain(..excess);
+    }
+    if let Err(err) = app
+        .notification()
+        .builder()
+        .id(id)
+        .title(title)
+        .body(body)
+        .show()
+    {
         log::warn!("Notification impossible : {err}");
+    }
+}
+
+fn on_notification_click<R: Runtime>(app: &AppHandle<R>, id: i32) {
+    let action = CLICK_ACTIONS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(i, _)| *i == id)
+        .map(|(_, a)| a.clone());
+    match action {
+        Some(ClickAction::OpenTask(task)) => {
+            let app = app.clone();
+            // Création de fenêtre hors du thread de la notification (voir `login`).
+            tauri::async_runtime::spawn(async move {
+                let Ok(url) = url::Url::parse(&task.page) else {
+                    return;
+                };
+                if let Err(err) = auth::open_site(
+                    &app,
+                    url,
+                    task.click,
+                    Some(task.title),
+                    task.query,
+                    None,
+                    true,
+                ) {
+                    log::warn!("Ouverture de la tâche impossible : {err}");
+                }
+            });
+        }
+        Some(ClickAction::OpenMain(view)) => {
+            show_main(app);
+            if let Some(view) = view {
+                let _ = app.emit("show-view", view);
+            }
+        }
+        None => show_main(app),
     }
 }
 
@@ -119,6 +203,7 @@ async fn refresh_now<R: Runtime>(app: &AppHandle<R>) -> Result<RewardsSummary, F
                 .record_balance(chrono::Local::now().date_naive(), summary.available_points);
             check_goal(app, summary.available_points);
             notify_expiring_quests(app, summary);
+            notify_new_searches(app, summary);
             let _ = app.emit("rewards-updated", summary);
         }
         Err(FetchError::NotLoggedIn) => {
@@ -157,6 +242,99 @@ fn notify_unlocked_tasks<R: Runtime>(app: &AppHandle<R>, summary: &RewardsSummar
             &format!("{} tâches déverrouillées", many.len()),
             &many.join("\n"),
         ),
+    }
+}
+
+/// Page du site où les activités du jour sont cliquables (voir l'interface).
+const DAILY_URL: &str = "https://rewards.bing.com/dashboard?section=dailyset";
+const EARN_URL: &str = "https://rewards.bing.com/earn";
+
+/// Recherches Bing à faire (activités et étapes de quêtes non verrouillées), par clé stable.
+fn search_tasks(summary: &RewardsSummary) -> Vec<(String, TaskTarget, i64)> {
+    let is_search =
+        |kind: Option<rewards::TaskKind>| kind.is_some_and(rewards::TaskKind::is_search);
+    let mut tasks = Vec::new();
+    for (activities, page) in [(&summary.daily_set, DAILY_URL), (&summary.more, EARN_URL)] {
+        for a in activities
+            .iter()
+            .filter(|a| !a.complete && !a.locked && is_search(a.kind))
+        {
+            tasks.push((
+                format!("a#{}", a.id),
+                TaskTarget {
+                    page: page.to_string(),
+                    click: a.url.clone(),
+                    title: a.title.clone(),
+                    query: a.search_query.clone(),
+                },
+                a.points,
+            ));
+        }
+    }
+    for card in &summary.punch_cards {
+        let Some(page) = &card.url else { continue };
+        for step in card
+            .steps
+            .iter()
+            .filter(|s| !s.complete && !s.locked && is_search(s.kind))
+        {
+            tasks.push((
+                format!("s#{}#{}", card.id, step.title),
+                TaskTarget {
+                    page: page.clone(),
+                    click: step.url.clone(),
+                    title: step.title.clone(),
+                    query: step.search_query.clone(),
+                },
+                0,
+            ));
+        }
+    }
+    tasks
+}
+
+/// Au plus autant de notifications à la fois ; au-delà, une seule qui ouvre l'application.
+const MAX_SEARCH_NOTIFICATIONS: usize = 3;
+
+/// Une notification par recherche Bing apparue depuis la dernière actualisation. Un clic
+/// ouvre la tâche, clique dessus dans la fenêtre Rewards et referme les fenêtres une fois la
+/// recherche faite. Rien ne se lance sans ce clic.
+fn notify_new_searches<R: Runtime>(app: &AppHandle<R>, summary: &RewardsSummary) {
+    let state = app.state::<AppState>();
+    let tasks = search_tasks(summary);
+    let current = tasks.iter().map(|(key, _, _)| key.clone()).collect();
+    // Premier relevé : on note l'existant sans prévenir.
+    let Some(previous) = state.store.swap_known_searches(current) else {
+        return;
+    };
+    if !state.store.settings().notify_new_searches {
+        return;
+    }
+    let new: Vec<_> = tasks
+        .into_iter()
+        .filter(|(key, _, _)| !previous.contains(key))
+        .collect();
+    if new.len() > MAX_SEARCH_NOTIFICATIONS {
+        notify_with(
+            app,
+            &format!("{} nouvelles recherches Bing", new.len()),
+            "Cliquez pour les voir dans « Recherches à faire aujourd'hui ».",
+            ClickAction::OpenMain(Some("today")),
+        );
+        return;
+    }
+    for (_, task, points) in new {
+        let points = if points > 0 {
+            format!(" · {points} pts")
+        } else {
+            String::new()
+        };
+        notify_with(
+            app,
+            "Nouvelle recherche Bing",
+            &format!("{}{points}\nCliquez pour la faire.", task.title),
+            ClickAction::OpenTask(task),
+        );
     }
 }
 
@@ -464,7 +642,8 @@ async fn open_rewards_site(
     if parsed.scheme() != "https" {
         return Err(format!("Adresse non autorisée : {url}"));
     }
-    auth::open_site(&app, parsed, click, click_title, query, guide).map_err(|e| e.to_string())
+    auth::open_site(&app, parsed, click, click_title, query, guide, false)
+        .map_err(|e| e.to_string())
 }
 
 /// Ouvre un lien dans le navigateur. Les liens viennent des pages Microsoft Rewards
@@ -545,6 +724,15 @@ pub fn run() {
                 last_refresh: Mutex::new(None),
                 refresh_lock: tauri::async_runtime::Mutex::new(None),
                 xbox: xbox::XboxState::default(),
+            });
+            // Clic sur une notification encore à l'écran.
+            let handle = app.handle().clone();
+            let _ = app.notification().on_action(move |performed| {
+                if performed.action_id() == "tap" {
+                    if let Some(notification) = performed.notification() {
+                        on_notification_click(&handle, notification.id());
+                    }
+                }
             });
             if let Some(warning) = app.state::<AppState>().store.load_warning() {
                 notify(app.handle(), "Rewards Autoplay", warning);
