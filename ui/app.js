@@ -44,10 +44,12 @@ function showView(view) {
   const todayView = state.loggedIn === false ? "login" : "today";
   $("view-login").hidden = !(view === "today" && todayView === "login");
   $("view-today").hidden = !(view === "today" && todayView === "today");
+  $("view-history").hidden = view !== "history";
   $("view-games").hidden = view !== "games";
   $("view-followed").hidden = view !== "followed";
   $("view-settings").hidden = view !== "settings";
   if (view === "games" && !games.catalog && !games.loading) loadCatalog(false);
+  if (view === "history") loadHistory();
 }
 
 for (const item of document.querySelectorAll(".nav-item")) {
@@ -89,8 +91,10 @@ let taskRefreshTimer;
  * Avec `click` (le lien de la tâche), l'application clique elle-même sur la tâche une fois la
  * page chargée : la recherche Bing, le quiz… s'ouvrent alors directement, et sont comptés.
  */
-function openTask(url, click = null, query = null, title = null) {
-  invoke("open_rewards_site", { url, click, clickTitle: click ? title : null, query }).catch((err) => toast(String(err)));
+function openTask(url, click = null, query = null, title = null, guide = null) {
+  // Une tâche ouverte à la main met fin à la session guidée (côté application aussi).
+  if (!guide && guided.index >= 0) endGuided({ quiet: true });
+  invoke("open_rewards_site", { url, click, clickTitle: click ? title : null, query, guide }).catch((err) => toast(String(err)));
 }
 
 // Chaque page chargée dans la fenêtre Rewards (un clic sur une activité, une étape…)
@@ -214,6 +218,8 @@ function renderSummary(summary) {
   renderStreaks(summary.streaks);
   renderGames();
   renderFollowed();
+  renderGoal();
+  if (state.view === "history") loadHistory();
 }
 
 /**
@@ -271,6 +277,85 @@ function renderSearchesToDo(summary) {
   $("bing-todo").replaceChildren(...(items.length ? items
     : [h("li", { class: "empty" }, "Toutes les recherches Bing du jour sont faites ✓")]));
 }
+
+// ---------- Session guidée (N7) ----------
+// « Faire mes tâches » ouvre les tâches une par une dans la fenêtre Microsoft Rewards ; un
+// bandeau y propose « Tâche suivante ». Chaque tâche reste cliquée à la demande de
+// l'utilisateur : rien n'est fait sans lui.
+
+const guided = { tasks: [], index: -1 };
+const GUIDED_RANK = { search: 0, quiz: 1, puzzle: 2, searchManual: 3 };
+
+function guidedTasks(summary) {
+  const open = (t) => !t.complete && !t.locked && t.url;
+  const activity = (a, daily) => ({
+    key: `a#${a.id}`, title: a.title, page: daily ? DAILY_URL : EARN_URL, click: a.url, query: a.searchQuery,
+    rank: daily ? -1 : GUIDED_RANK[a.kind] ?? 4,
+  });
+  const activities = [
+    ...summary.dailySet.filter(open).map((a) => activity(a, true)),
+    ...summary.more.filter((a) => open(a) && a.points > 0 && a.kind !== "edgeSetting").map((a) => activity(a, false)),
+  ];
+  const steps = summary.punchCards.filter((c) => c.url && !c.complete).flatMap((card) =>
+    card.steps.filter(open).map((step) => ({
+      key: `s#${card.id}#${step.title}`, title: step.title, page: card.url, click: step.url, query: step.searchQuery, rank: 5,
+    })));
+  return [...activities, ...steps].sort((a, b) => a.rank - b.rank);
+}
+
+/** Une tâche terminée entre-temps (actualisation après chaque tâche) est sautée. */
+function guidedTaskDone(task) {
+  const summary = state.summary;
+  if (!summary) return false;
+  return !guidedTasks(summary).some((t) => t.key === task.key);
+}
+
+function startGuided() {
+  if (!state.summary) {
+    toast("Connectez-vous d'abord à Microsoft Rewards.");
+    return;
+  }
+  guided.tasks = guidedTasks(state.summary);
+  if (!guided.tasks.length) {
+    toast("Rien à faire pour l'instant : toutes les tâches accessibles sont terminées.");
+    return;
+  }
+  guided.index = 0;
+  openGuided();
+}
+
+function openGuided() {
+  const task = guided.tasks[guided.index];
+  const total = guided.tasks.length;
+  $("guided-text").textContent = `Session guidée · tâche ${guided.index + 1} / ${total} : ${task.title}. Passez à la suivante depuis le bandeau de la fenêtre Microsoft Rewards.`;
+  $("guided-banner").hidden = false;
+  openTask(task.page, task.click, task.query, task.title, { index: guided.index, total, title: task.title });
+}
+
+function nextGuided() {
+  if (guided.index < 0) return;
+  do guided.index++;
+  while (guided.index < guided.tasks.length && guidedTaskDone(guided.tasks[guided.index]));
+  if (guided.index >= guided.tasks.length) endGuided();
+  else openGuided();
+}
+
+function endGuided({ quiet = false } = {}) {
+  if (guided.index < 0) return;
+  guided.index = -1;
+  $("guided-banner").hidden = true;
+  if (!quiet) {
+    invoke("stop_guided").catch(() => {});
+    toast("Session guidée terminée.");
+  }
+}
+
+$("guided-btn").addEventListener("click", startGuided);
+$("guided-stop").addEventListener("click", () => endGuided());
+listen("guided-start", () => { showView("today"); startGuided(); });
+listen("guided-next", nextGuided);
+listen("guided-end", () => endGuided());
+listen("show-view", (event) => showView(String(event.payload)));
 
 /** « dans 2 h 15 min » jusqu'à une date ISO. */
 function timeUntil(iso) {
@@ -574,6 +659,166 @@ listen("xbox-error", (event) => {
   renderXboxLive();
 });
 
+// ---------- Historique des points (N1) ----------
+
+const shortDate = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short" });
+const DAY_MS = 86400e3;
+/** « 2026-11-11 » → date locale à midi (évite un décalage d'un jour selon le fuseau). */
+const dayDate = (iso) => new Date(`${iso}T12:00:00`);
+const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/**
+ * Gains par jour, d'après le solde relevé chaque jour : la différence avec le dernier relevé
+ * précédent. Une baisse correspond à un échange de points.
+ */
+function dailyGains(history) {
+  const days = [];
+  for (let i = 1; i < history.length; i++) {
+    const delta = history[i].balance - history[i - 1].balance;
+    days.push({ date: history[i].date, gain: Math.max(0, delta), spent: Math.max(0, -delta) });
+  }
+  return days;
+}
+
+/** Moyenne des points gagnés par jour sur les 30 derniers jours relevés (null sans données). */
+function averageGain(history) {
+  const recent = dailyGains(history).slice(-30);
+  if (!recent.length) return null;
+  return recent.reduce((sum, d) => sum + d.gain, 0) / recent.length;
+}
+
+async function loadHistory() {
+  try {
+    state.history = await invoke("points_history");
+  } catch (err) {
+    state.history = [];
+  }
+  renderHistory();
+  renderGoal();
+}
+
+function tile(value, label) {
+  return h("div", { class: "tile" }, h("b", {}, value), h("span", {}, label));
+}
+
+function renderHistory() {
+  const history = state.history ?? [];
+  const gains = dailyGains(history);
+  const today = isoDay(new Date());
+  const todayGain = gains.find((d) => d.date === today);
+  const last7 = gains.filter((d) => Date.now() - dayDate(d.date) < 7 * DAY_MS);
+  const last30 = gains.slice(-30);
+  const avg = averageGain(history);
+  const fmt = (n) => numberFormat.format(Math.round(n));
+  $("history-tiles").replaceChildren(
+    tile(todayGain ? `+${fmt(todayGain.gain)}` : "—", "gagnés aujourd'hui"),
+    tile(last7.length ? `+${fmt(last7.reduce((s, d) => s + d.gain, 0))}` : "—", "sur les 7 derniers jours"),
+    tile(avg === null ? "—" : fmt(avg), "par jour en moyenne (30 j)"),
+    tile(last30.length ? fmt(last30.reduce((s, d) => s + d.spent, 0)) : "—", "points échangés (30 j)"));
+
+  if (history.length) {
+    $("history-range").textContent = `depuis le ${shortDate.format(dayDate(history[0].date))}`;
+  }
+  $("history-note").textContent = gains.length < 2
+    ? "L'historique se remplit à chaque actualisation : le solde de chaque jour est relevé, et le gain du jour est la différence avec la veille. Revenez demain pour voir le premier gain."
+    : "Gain du jour = solde du jour moins le dernier solde relevé avant lui. Une baisse est comptée comme un échange de points.";
+  renderChart(gains.slice(-30));
+}
+
+/** Histogramme des 30 derniers jours : gains en vert, échanges en orange. */
+function renderChart(days) {
+  const box = $("history-chart");
+  if (!days.length) {
+    box.replaceChildren(h("p", { class: "muted" }, "Pas encore assez de relevés pour tracer le graphique."));
+    return;
+  }
+  const ns = "http://www.w3.org/2000/svg";
+  const W = 720, H = 220, left = 40, right = 8, top = 16, bottom = 28;
+  const max = Math.max(10, ...days.map((d) => Math.max(d.gain, d.spent)));
+  const step = Math.pow(10, Math.floor(Math.log10(max)));
+  const niceMax = Math.ceil(max / step) * step;
+  const y = (v) => top + (H - top - bottom) * (1 - v / niceMax);
+  const slot = (W - left - right) / days.length;
+  const bar = Math.max(2, Math.min(18, slot * 0.6));
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Points gagnés et échangés par jour, 30 derniers jours");
+  const el = (tag, attrs, text) => {
+    const n = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (text !== undefined) n.textContent = text;
+    svg.append(n);
+    return n;
+  };
+  for (const v of [0, niceMax / 2, niceMax]) {
+    el("line", { class: "grid-line", x1: left, x2: W - right, y1: y(v), y2: y(v) });
+    el("text", { class: "axis", x: left - 6, y: y(v) + 4, "text-anchor": "end" }, numberFormat.format(v));
+  }
+  const today = isoDay(new Date());
+  days.forEach((d, i) => {
+    const cx = left + slot * i + slot / 2;
+    if (d.gain > 0) {
+      const r = el("rect", { class: d.date === today ? "today" : "gain", x: cx - bar / 2, y: y(d.gain), width: bar, height: y(0) - y(d.gain), rx: 2 });
+      r.append(Object.assign(document.createElementNS(ns, "title"), { textContent: `${shortDate.format(dayDate(d.date))} : +${d.gain} pts` }));
+    }
+    if (d.spent > 0) {
+      const r = el("rect", { class: "spent", x: cx - bar / 2, y: y(d.spent), width: bar / 3, height: y(0) - y(d.spent), rx: 1 });
+      r.append(Object.assign(document.createElementNS(ns, "title"), { textContent: `${shortDate.format(dayDate(d.date))} : ${d.spent} pts échangés` }));
+    }
+    const labelEvery = Math.ceil(days.length / 8);
+    if (i % labelEvery === 0 || i === days.length - 1) {
+      el("text", { class: "axis", x: cx, y: H - 8, "text-anchor": "middle" }, shortDate.format(dayDate(d.date)));
+    }
+  });
+  box.replaceChildren(svg, h("div", { class: "legend" },
+    h("span", {}, h("i", { style: "background:var(--accent)" }), "Points gagnés"),
+    h("span", {}, h("i", { style: "background:var(--warn)" }), "Points échangés")));
+}
+
+// ---------- Objectif d'échange (N2) ----------
+
+async function setGoal(item) {
+  try {
+    state.goal = await invoke("set_goal", {
+      goal: item ? { id: item.id, title: item.title, price: item.price, url: item.url ?? null, imageUrl: item.imageUrl ?? null, notified: false } : null,
+    });
+    toast(item ? `Objectif : ${item.title}` : "Objectif retiré.");
+  } catch (err) {
+    toast(String(err));
+  }
+  renderGoal();
+  renderGameCatalog();
+}
+
+/** Carte de l'objectif en haut d'« Aujourd'hui » : points qui manquent et date estimée. */
+function renderGoal() {
+  const goal = state.goal;
+  const balance = state.summary?.availablePoints;
+  $("goal-panel").hidden = !goal || balance === undefined;
+  if (!goal || balance === undefined) return;
+  const missing = Math.max(0, goal.price - balance);
+  const pct = Math.min(100, (balance / goal.price) * 100);
+  const avg = averageGain(state.history ?? []);
+  let eta;
+  if (!missing) eta = "Vous avez assez de points pour l'échanger.";
+  else if (avg && avg > 0) {
+    const days = Math.ceil(missing / avg);
+    const date = new Date(Date.now() + days * DAY_MS);
+    eta = `Encore ${numberFormat.format(missing)} pts · environ ${days} jour${days > 1 ? "s" : ""} au rythme actuel (vers le ${shortDate.format(date)})`;
+  } else eta = `Encore ${numberFormat.format(missing)} pts · la date estimée apparaîtra après quelques jours d'historique`;
+  $("goal").replaceChildren(h("div", { class: "goal-card" },
+    goal.imageUrl ? h("img", { src: goal.imageUrl, alt: "" }) : h("span", { class: "img" }),
+    h("div", {},
+      h("p", { class: "eyebrow" }, "Objectif d'échange"),
+      h("div", { class: "goal-title" }, goal.title),
+      h("div", { class: "counter-top" }, h("span", { class: "muted small" }, eta), h("b", {}, `${numberFormat.format(Math.min(balance, goal.price))} / ${numberFormat.format(goal.price)} pts`)),
+      h("div", { class: "bar" }, h("i", { style: `width:${pct}%` }))),
+    h("div", { class: "goal-actions" },
+      goal.url ? h("button", { class: `btn small${missing ? "" : " primary"}`, type: "button", onclick: () => openTask(goal.url) }, missing ? "Voir l'article ↗" : "Échanger ↗") : null,
+      h("button", { class: "btn small ghost", type: "button", onclick: () => setGoal(null) }, "Retirer"))));
+}
+
 // ---------- Récompenses par jeu ----------
 
 const games = { query: "", catalog: null, loading: false };
@@ -621,6 +866,10 @@ function questItem(card, { open = false } = {}) {
   const meta = [];
   if (card.total) meta.push(`${card.done} / ${card.total} tâches`);
   if (card.expiresAt) meta.push(`expire le ${expiryFormat.format(new Date(card.expiresAt))}`);
+  const hoursLeft = card.expiresAt ? (new Date(card.expiresAt) - Date.now()) / 3600e3 : Infinity;
+  const expiring = !card.complete && hoursLeft > 0 && hoursLeft <= 48
+    ? h("span", { class: "tag expiring", title: "La quête se termine bientôt et n'est pas finie" }, `Expire dans ${Math.max(1, Math.round(hoursLeft))} h`)
+    : null;
   const hasDetails = card.description || card.steps.length || card.imageUrl;
   const details = hasDetails
     ? h("details", { class: "quest-details", open },
@@ -638,7 +887,7 @@ function questItem(card, { open = false } = {}) {
       withThumb(card.imageUrl,
         h("div", { class: "title" },
           card.url ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(card.url); } }, card.title) : card.title,
-          " ", card.xbox ? h("span", { class: "tag" }, "Xbox") : null),
+          " ", card.xbox ? h("span", { class: "tag" }, "Xbox") : null, " ", expiring),
         meta.length ? h("div", { class: "desc" }, meta.join(" · ")) : null),
       details),
     h("div", { class: "quest-side" },
@@ -721,6 +970,16 @@ function renderGameQuests() {
     : "Aucune quête de jeu en cours sur votre compte.")]));
 }
 
+/** Bouton « Viser » : choisit l'article comme objectif d'échange, ou le retire. */
+function goalButton(item) {
+  const active = state.goal?.id === item.id;
+  return h("button", {
+    class: "btn small goal-btn", type: "button", "aria-pressed": active ? "true" : "false",
+    title: active ? "Retirer cet objectif" : "Suivre les points qui manquent pour cet article",
+    onclick: () => setGoal(active ? null : item),
+  }, active ? "🎯 Objectif" : "Viser");
+}
+
 function catalogItem(item) {
   const balance = state.summary?.availablePoints;
   let status = null;
@@ -734,7 +993,8 @@ function catalogItem(item) {
       h("div", { class: "title" }, h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(item.url); } }, item.title)),
       h("div", { class: "price" }, `${numberFormat.format(item.price)} pts`,
         item.originalPrice > item.price ? h("span", { class: "old" }, `${numberFormat.format(item.originalPrice)} pts`) : null),
-      status));
+      status,
+      goalButton(item)));
 }
 
 function renderGameCatalog() {
@@ -804,6 +1064,7 @@ async function saveSettings() {
     remindXbox: $("remind-xbox").checked,
     remindStreaks: $("remind-streaks").checked,
     notifyUnlocks: $("notify-unlocks").checked,
+    notifyExpiring: $("notify-expiring").checked,
     subscription: $("subscription").value,
     autoCheckUpdates: $("auto-update").checked,
     updateCheckIntervalMinutes: clampMinutesInput("update-interval", 1, 10080),
@@ -822,6 +1083,7 @@ function renderSettings(settings) {
   $("remind-xbox").checked = settings.remindXbox;
   $("remind-streaks").checked = settings.remindStreaks;
   $("notify-unlocks").checked = settings.notifyUnlocks;
+  $("notify-expiring").checked = settings.notifyExpiring;
   $("subscription").value = settings.subscription;
   $("auto-update").checked = settings.autoCheckUpdates;
   $("update-interval").value = settings.updateCheckIntervalMinutes;
@@ -858,7 +1120,7 @@ function refreshMinutesInput() {
   return minutes;
 }
 
-for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval", "mode-reminders"]) {
+for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval", "mode-reminders"]) {
   $(id).addEventListener("change", saveSettings);
 }
 
@@ -945,15 +1207,19 @@ listen("check-update-requested", () => {
 
 (async function init() {
   renderToday();
-  const [info, settings, autostart, xbox, cached, followed] = await Promise.all([
+  const [info, settings, autostart, xbox, cached, followed, goal, history] = await Promise.all([
     invoke("app_info"),
     invoke("get_settings"),
     invoke("autostart_enabled"),
     invoke("xbox_progress"),
     invoke("cached_rewards"),
     invoke("followed_quests"),
+    invoke("get_goal"),
+    invoke("points_history"),
   ]);
   state.followed = followed;
+  state.goal = goal;
+  state.history = history;
   $("version-line").textContent = `Version ${info.version}`;
   $("current-version").textContent = info.version;
   renderSettings(settings);

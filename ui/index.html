@@ -11,6 +11,7 @@
     <nav class="side" aria-label="Navigation">
       <div class="brand"><img src="icon.png" alt="" width="28" height="28"><span>Rewards Autoplay</span></div>
       <button class="nav-item" data-view="today" aria-current="page">Aujourd'hui</button>
+      <button class="nav-item" data-view="history">Historique</button>
       <button class="nav-item" data-view="games">Jeux</button>
       <button class="nav-item" data-view="followed">Quêtes suivies <span class="count" id="followed-count" hidden></span></button>
       <button class="nav-item" data-view="settings">Paramètres</button>
@@ -50,11 +51,20 @@
           <div class="head-actions">
             <span class="muted small" id="fetched-at"></span>
             <button class="btn" id="refresh-btn">Actualiser</button>
+            <button class="btn primary" id="guided-btn" type="button" title="Ouvre vos tâches une par une dans la fenêtre Microsoft Rewards">Faire mes tâches ▸</button>
           </div>
         </header>
+        <div id="guided-banner" class="banner info" hidden>
+          <span id="guided-text"></span>
+          <button class="btn" id="guided-stop" type="button">Arrêter</button>
+        </div>
         <div id="fetch-error" class="banner danger" hidden></div>
 
         <div class="grid">
+          <article class="panel wide goal-panel" id="goal-panel" hidden>
+            <div id="goal"></div>
+          </article>
+
           <article class="panel">
             <h2>Recherches Bing</h2>
             <div id="searches" class="stack"></div>
@@ -138,6 +148,25 @@
         </div>
       </section>
 
+      <!-- Historique -->
+      <section id="view-history" class="view" hidden>
+        <header class="head">
+          <div>
+            <p class="eyebrow">Historique</p>
+            <h1 class="view-title">Vos points, jour après jour</h1>
+          </div>
+        </header>
+        <div class="tiles" id="history-tiles"></div>
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Points gagnés par jour</h2>
+            <span class="muted small" id="history-range"></span>
+          </div>
+          <div id="history-chart" class="chart"></div>
+          <p class="muted small" id="history-note"></p>
+        </article>
+      </section>
+
       <!-- Jeux -->
       <section id="view-games" class="view" hidden>
         <h1>Récompenses par jeu</h1>
@@ -203,6 +232,7 @@
             <label class="check"><input type="checkbox" id="remind-streaks"> Séries dont l'étape du jour n'est pas faite (un jour manqué remet la série à zéro)</label>
             <span></span>
             <label class="check"><input type="checkbox" id="notify-unlocks"> Prévenir dès qu'une tâche verrouillée se déverrouille (étape de quête, activité)</label>
+            <label class="check"><input type="checkbox" id="notify-expiring"> Prévenir quand une quête pas terminée expire dans moins de 48 heures</label>
             <span></span>
             <div><button class="btn" id="test-reminder">Envoyer le rappel maintenant</button> <span class="muted small" id="test-reminder-result"></span></div>
           </div>

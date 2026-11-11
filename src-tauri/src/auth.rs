@@ -175,6 +175,58 @@ const CLICK_SCRIPT: &str = r#"(() => {
   tick();
 })();"#;
 
+/// Étape en cours d'une session guidée (« Faire mes tâches »).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GuideStep {
+    pub index: usize,
+    pub total: usize,
+    pub title: String,
+}
+
+static GUIDE: Mutex<Option<GuideStep>> = Mutex::new(None);
+
+/// Arrête la session guidée et retire son bandeau de la fenêtre Rewards.
+pub fn stop_guide<R: Runtime>(app: &AppHandle<R>) {
+    *GUIDE.lock().unwrap() = None;
+    if let Some(window) = app.get_webview_window(SITE_LABEL) {
+        let _ = window.eval("document.getElementById('rewards-autoplay-guide')?.remove()");
+    }
+}
+
+/// Adresse réservée : les boutons du bandeau y naviguent, l'application intercepte la
+/// navigation (la page Rewards n'a aucun accès aux commandes de l'application).
+const GUIDE_PATH: &str = "/__rewards-autoplay/";
+
+/// Bandeau de la session guidée, en bas de la page Rewards.
+const GUIDE_SCRIPT: &str = r##"(() => {
+  const step = __STEP__;
+  document.getElementById("rewards-autoplay-guide")?.remove();
+  const bar = document.createElement("div");
+  bar.id = "rewards-autoplay-guide";
+  bar.setAttribute("role", "region");
+  bar.setAttribute("aria-label", "Session guidée Rewards Autoplay");
+  bar.style.cssText = "position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:2147483647;"
+    + "display:flex;align-items:center;gap:12px;flex-wrap:wrap;max-width:calc(100% - 32px);"
+    + "padding:10px 12px 10px 16px;border-radius:12px;background:#1f2a24;color:#fff;"
+    + "font:14px/1.4 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.35)";
+  const text = document.createElement("span");
+  text.textContent = "Tâche " + (step.index + 1) + " / " + step.total + " · " + step.title;
+  const go = (action) => () => { location.href = location.origin + "/__rewards-autoplay/" + action; };
+  const button = (label, action, primary) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.onclick = go(action);
+    b.style.cssText = "border:0;border-radius:8px;padding:6px 12px;cursor:pointer;font:600 14px system-ui,sans-serif;"
+      + (primary ? "background:#4cc28a;color:#0b130f" : "background:transparent;color:#fff;border:1px solid #5b6b62");
+    return b;
+  };
+  const last = step.index + 1 >= step.total;
+  bar.append(text, button(last ? "Terminer ✓" : "Tâche suivante ▸", last ? "end" : "next", true));
+  if (!last) bar.append(button("Arrêter", "end", false));
+  document.body.append(bar);
+})();"##;
+
 /// Texte à chercher pour une tâche « recherchez sur Bing … », mis dans le champ de recherche
 /// de Bing quand la page s'ouvre. Il n'est jamais envoyé : l'utilisateur valide lui-même.
 static PENDING_QUERY: Mutex<Option<String>> = Mutex::new(None);
@@ -277,7 +329,10 @@ pub fn open_site<R: Runtime>(
     click: Option<String>,
     click_title: Option<String>,
     query: Option<String>,
+    guide: Option<GuideStep>,
 ) -> tauri::Result<()> {
+    // Une tâche ouverte hors session guidée met fin à la session.
+    *GUIDE.lock().unwrap() = guide;
     *PENDING_CLICK.lock().unwrap() = click.map(|url| (url, click_title));
     *PENDING_QUERY.lock().unwrap() = query.filter(|q| !q.trim().is_empty());
     if let Some(window) = app.get_webview_window(SITE_LABEL) {
@@ -291,6 +346,25 @@ pub fn open_site<R: Runtime>(
         .title("Microsoft Rewards")
         .inner_size(1100.0, 820.0)
         .center()
+        // Boutons du bandeau de la session guidée.
+        .on_navigation({
+            let handle = app.clone();
+            move |url| {
+                let Some(action) = url.path().strip_prefix(GUIDE_PATH) else {
+                    return true;
+                };
+                match action {
+                    "next" => {
+                        let _ = handle.emit("guided-next", ());
+                    }
+                    _ => {
+                        stop_guide(&handle);
+                        let _ = handle.emit("guided-end", ());
+                    }
+                }
+                false
+            }
+        })
         // Le site ouvre la recherche Bing, le quiz… dans une nouvelle fenêtre après avoir
         // validé le clic. Sans ce gestionnaire, WebView2 bloque ces fenêtres en silence.
         .on_new_window({
@@ -324,6 +398,12 @@ pub fn open_site<R: Runtime>(
                     let _ = window.eval(script);
                 }
             }
+            if payload.url().host_str() == Some("rewards.bing.com") {
+                if let Some(step) = GUIDE.lock().unwrap().clone() {
+                    let step = serde_json::to_string(&step).unwrap_or_default();
+                    let _ = window.eval(GUIDE_SCRIPT.replace("__STEP__", &step));
+                }
+            }
             // Certains liens s'ouvrent dans la même fenêtre plutôt que dans une nouvelle.
             fill_pending_query(&window, payload.url());
         })
@@ -331,6 +411,10 @@ pub fn open_site<R: Runtime>(
     let handle = app.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Destroyed = event {
+            // Fermer la fenêtre Rewards arrête la session guidée.
+            if GUIDE.lock().unwrap().take().is_some() {
+                let _ = handle.emit("guided-end", ());
+            }
             let _ = handle.emit("rewards-site-closed", ());
         }
     });

@@ -40,15 +40,22 @@ pub fn create<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             "quit" => app.exit(0),
             _ => {}
         })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
+        // Clic gauche : mini-fenêtre ; double-clic : fenêtre principale.
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
+                position,
                 ..
-            } = event
-            {
+            } => crate::mini::toggle(tray.app_handle(), position),
+            TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => {
+                crate::mini::hide(tray.app_handle());
                 crate::show_main(tray.app_handle());
             }
+            _ => {}
         });
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());

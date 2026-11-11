@@ -38,6 +38,8 @@ pub struct Settings {
     pub remind_streaks: bool,
     /// Notifier quand une tâche verrouillée devient accessible.
     pub notify_unlocks: bool,
+    /// Notifier quand une quête pas terminée expire dans moins de 48 heures.
+    pub notify_expiring: bool,
     pub subscription: Subscription,
     pub auto_check_updates: bool,
     /// Délai entre deux recherches de mise à jour, en minutes.
@@ -62,6 +64,7 @@ impl Default for Settings {
             remind_xbox: true,
             remind_streaks: true,
             notify_unlocks: true,
+            notify_expiring: true,
             subscription: Subscription::None,
             auto_check_updates: true,
             update_check_interval_minutes: 360,
@@ -124,7 +127,31 @@ struct Persisted {
     followed_quests: Vec<FollowedQuest>,
     /// Tâches verrouillées lors de la dernière actualisation, pour repérer les déverrouillages.
     locked_tasks: BTreeSet<String>,
+    /// Solde de points relevé à la dernière actualisation de chaque jour.
+    points_history: BTreeMap<NaiveDate, i64>,
+    /// Article du catalogue que l'utilisateur vise.
+    goal: Option<Goal>,
+    /// Alertes déjà envoyées (quête qui expire…), pour ne prévenir qu'une fois.
+    sent_alerts: BTreeSet<String>,
 }
+
+/// Objectif d'échange : un article du catalogue Rewards.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Goal {
+    pub id: String,
+    pub title: String,
+    pub price: i64,
+    pub url: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<String>,
+    /// Notification « objectif atteignable » déjà envoyée.
+    #[serde(default)]
+    pub notified: bool,
+}
+
+/// Un an d'historique suffit pour les moyennes et le graphique.
+const HISTORY_DAYS: i64 = 400;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -255,6 +282,61 @@ impl Store {
             self.save(&data);
         }
         previous
+    }
+
+    /// Relève le solde du jour (le dernier de la journée l'emporte).
+    pub fn record_balance(&self, day: NaiveDate, balance: i64) {
+        let mut data = self.data.lock().unwrap();
+        if data.points_history.get(&day) == Some(&balance) {
+            return;
+        }
+        data.points_history.insert(day, balance);
+        let newest = data
+            .points_history
+            .keys()
+            .next_back()
+            .copied()
+            .unwrap_or(day);
+        let oldest = newest - chrono::Duration::days(HISTORY_DAYS);
+        data.points_history.retain(|d, _| *d >= oldest);
+        self.save(&data);
+    }
+
+    pub fn points_history(&self) -> Vec<(NaiveDate, i64)> {
+        self.data
+            .lock()
+            .unwrap()
+            .points_history
+            .iter()
+            .map(|(d, b)| (*d, *b))
+            .collect()
+    }
+
+    pub fn goal(&self) -> Option<Goal> {
+        self.data.lock().unwrap().goal.clone()
+    }
+
+    pub fn set_goal(&self, goal: Option<Goal>) {
+        let mut data = self.data.lock().unwrap();
+        data.goal = goal;
+        self.save(&data);
+    }
+
+    /// Vrai la première fois seulement pour une même clé : sert à ne prévenir qu'une fois.
+    pub fn first_alert(&self, key: &str) -> bool {
+        let mut data = self.data.lock().unwrap();
+        if !data.sent_alerts.insert(key.to_string()) {
+            return false;
+        }
+        // Les clés portent une date ou un identifiant de quête : on garde les 500 dernières.
+        while data.sent_alerts.len() > 500 {
+            let first = data.sent_alerts.iter().next().cloned();
+            if let Some(first) = first {
+                data.sent_alerts.remove(&first);
+            }
+        }
+        self.save(&data);
+        true
     }
 
     pub fn followed_quests(&self) -> Vec<FollowedQuest> {
@@ -415,5 +497,22 @@ mod tests {
         for ext in ["", ".bak", ".bad"] {
             let _ = std::fs::remove_file(with_extension(&path, ext));
         }
+    }
+
+    #[test]
+    fn historique_et_alertes() {
+        let path = std::env::temp_dir().join(format!(
+            "rewards-autoplay-history-{}.json",
+            std::process::id()
+        ));
+        let store = Store::load(path.clone());
+        let day = NaiveDate::from_ymd_opt(2026, 11, 11).unwrap();
+        store.record_balance(day, 3000);
+        store.record_balance(day, 3050);
+        store.record_balance(day - chrono::Duration::days(500), 10);
+        assert_eq!(store.points_history(), vec![(day, 3050)]);
+        assert!(store.first_alert("expire#sot"));
+        assert!(!store.reload().first_alert("expire#sot"));
+        let _ = std::fs::remove_file(path);
     }
 }

@@ -1,6 +1,7 @@
 mod auth;
 mod catalog;
 mod flight;
+mod mini;
 mod reminders;
 mod rewards;
 mod store;
@@ -113,6 +114,11 @@ async fn refresh_now<R: Runtime>(app: &AppHandle<R>) -> Result<RewardsSummary, F
             *state.summary.lock().unwrap() = Some(summary.clone());
             tray::set_points(app, Some(summary.available_points));
             notify_unlocked_tasks(app, summary);
+            state
+                .store
+                .record_balance(chrono::Local::now().date_naive(), summary.available_points);
+            check_goal(app, summary.available_points);
+            notify_expiring_quests(app, summary);
             let _ = app.emit("rewards-updated", summary);
         }
         Err(FetchError::NotLoggedIn) => {
@@ -152,6 +158,147 @@ fn notify_unlocked_tasks<R: Runtime>(app: &AppHandle<R>, summary: &RewardsSummar
             &many.join("\n"),
         ),
     }
+}
+
+/// Prévient une fois quand le solde permet d'échanger l'article visé.
+fn check_goal<R: Runtime>(app: &AppHandle<R>, balance: i64) {
+    let store = &app.state::<AppState>().store;
+    let Some(mut goal) = store.goal() else {
+        return;
+    };
+    let reachable = balance >= goal.price;
+    if reachable && !goal.notified {
+        notify(
+            app,
+            "Objectif atteint",
+            &format!(
+                "Vous avez assez de points pour échanger « {} ».",
+                goal.title
+            ),
+        );
+    }
+    // Après un échange, le solde repasse sous le prix : la prochaine fois sera signalée aussi.
+    if reachable != goal.notified {
+        goal.notified = reachable;
+        store.set_goal(Some(goal));
+    }
+}
+
+/// Une quête pas terminée qui expire dans moins de 48 heures est signalée une fois.
+fn notify_expiring_quests<R: Runtime>(app: &AppHandle<R>, summary: &RewardsSummary) {
+    let state = app.state::<AppState>();
+    if !state.store.settings().notify_expiring {
+        return;
+    }
+    let followed: Vec<String> = state
+        .store
+        .followed_quests()
+        .into_iter()
+        .map(|q| q.id)
+        .collect();
+    let now = chrono::Utc::now();
+    for card in summary.punch_cards.iter().filter(|c| !c.complete) {
+        let Some(expires) = card
+            .expires_at
+            .as_deref()
+            .and_then(|d| chrono::DateTime::parse_from_rfc3339(d).ok())
+        else {
+            continue;
+        };
+        let left = expires.with_timezone(&chrono::Utc) - now;
+        if left <= chrono::Duration::zero() || left > chrono::Duration::hours(48) {
+            continue;
+        }
+        if !state
+            .store
+            .first_alert(&format!("expire#{}#{}", card.id, expires.to_rfc3339()))
+        {
+            continue;
+        }
+        let star = if followed.contains(&card.id) {
+            "★ "
+        } else {
+            ""
+        };
+        let progress = if card.total > 0 {
+            format!("{}/{} tâches, ", card.done, card.total)
+        } else {
+            String::new()
+        };
+        notify(
+            app,
+            "Quête bientôt terminée",
+            &format!(
+                "{star}{} : {progress}expire dans {} h",
+                card.title,
+                left.num_hours().max(1)
+            ),
+        );
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoryDay {
+    date: chrono::NaiveDate,
+    balance: i64,
+}
+
+/// Solde relevé chaque jour, du plus ancien au plus récent.
+#[tauri::command]
+fn points_history(state: State<AppState>) -> Vec<HistoryDay> {
+    state
+        .store
+        .points_history()
+        .into_iter()
+        .map(|(date, balance)| HistoryDay { date, balance })
+        .collect()
+}
+
+/// Depuis la mini-fenêtre : ouvre la fenêtre principale, sur une vue donnée.
+#[tauri::command]
+fn open_main(app: AppHandle, view: Option<String>) {
+    mini::hide(&app);
+    show_main(&app);
+    if let Some(view) = view {
+        let _ = app.emit("show-view", view);
+    }
+}
+
+/// Depuis la mini-fenêtre : lance la session guidée, pilotée par la fenêtre principale.
+#[tauri::command]
+fn start_guided(app: AppHandle) {
+    mini::hide(&app);
+    let _ = app.emit("guided-start", ());
+}
+
+#[tauri::command]
+fn hide_mini(app: AppHandle) {
+    mini::hide(&app);
+}
+
+#[tauri::command]
+fn stop_guided(app: AppHandle) {
+    auth::stop_guide(&app);
+}
+
+#[tauri::command]
+fn get_goal(state: State<AppState>) -> Option<store::Goal> {
+    state.store.goal()
+}
+
+/// Choisit (ou retire avec `None`) l'article visé.
+#[tauri::command]
+fn set_goal(app: AppHandle, goal: Option<store::Goal>) -> Option<store::Goal> {
+    let state = app.state::<AppState>();
+    state.store.set_goal(goal.map(|g| store::Goal {
+        notified: false,
+        ..g
+    }));
+    if let Some(summary) = state.summary.lock().unwrap().clone() {
+        check_goal(&app, summary.available_points);
+    }
+    state.store.goal()
 }
 
 #[tauri::command]
@@ -311,12 +458,13 @@ async fn open_rewards_site(
     click: Option<String>,
     click_title: Option<String>,
     query: Option<String>,
+    guide: Option<auth::GuideStep>,
 ) -> Result<(), String> {
     let parsed = url::Url::parse(&url).map_err(|e| e.to_string())?;
     if parsed.scheme() != "https" {
         return Err(format!("Adresse non autorisée : {url}"));
     }
-    auth::open_site(&app, parsed, click, click_title, query).map_err(|e| e.to_string())
+    auth::open_site(&app, parsed, click, click_title, query, guide).map_err(|e| e.to_string())
 }
 
 /// Ouvre un lien dans le navigateur. Les liens viennent des pages Microsoft Rewards
@@ -402,6 +550,7 @@ pub fn run() {
                 notify(app.handle(), "Rewards Autoplay", warning);
             }
             tray::create(app.handle())?;
+            mini::create(app.handle())?;
             let restarted_minimized = take_restart_minimized(app.handle());
             if !restarted_minimized && !std::env::args().any(|arg| arg == MINIMIZED_ARG) {
                 show_main(app.handle());
@@ -410,9 +559,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Fermer la fenêtre principale la cache : l'app continue dans le tray.
+            // Fermer la fenêtre principale (ou la mini-fenêtre) la cache : l'app continue dans le tray.
             if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
+                if window.label() == "main" || window.label() == mini::LABEL {
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -444,6 +593,13 @@ pub fn run() {
             open_xbox_app,
             open_logs,
             app_info,
+            points_history,
+            get_goal,
+            set_goal,
+            open_main,
+            start_guided,
+            stop_guided,
+            hide_mini,
         ])
         .run(tauri::generate_context!())
         .expect("erreur au lancement de Rewards Autoplay");

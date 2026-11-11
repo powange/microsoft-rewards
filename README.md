@@ -2,12 +2,17 @@
 
 Application Windows (Rust + Tauri 2) qui suit vos points Microsoft Rewards et vous rappelle chaque jour ce qu'il reste à faire, y compris les quêtes Xbox Game Pass. Elle tourne en arrière-plan dans la zone de notification et se met à jour toute seule.
 
-## Fonctionnalités (v0.1)
+## Fonctionnalités
 
 - Connexion au compte Microsoft sur la page officielle de Microsoft Rewards, dans une fenêtre dédiée. L'application ne voit jamais le mot de passe.
 - Tableau de bord : solde de points, niveau, recherches Bing du jour, activités du jour, cartes à poinçonner et autres activités.
 - Séries (Recherche Bing, série quotidienne, application Bing) avec la frise des 7 jours, l'état du jour et la carte des 12 tampons bonus.
 - Recherches Bing : chaque tâche (activité, étape de quête) porte un badge d'après son lien — « Recherche Bing » (le lien lance la recherche), « Recherche à faire » (accueil de Bing ou texte qui demande des recherches), « Quiz », « Puzzle », « Site partenaire » — et le bloc « Recherches à faire aujourd'hui » les regroupe avec les points de recherche quotidiens restants.
+- Historique : solde relevé chaque jour, points gagnés aujourd'hui, sur 7 jours, moyenne sur 30 jours, points échangés, et graphique des 30 derniers jours.
+- Objectif d'échange : « Viser » un article du catalogue pour suivre les points qui manquent et la date estimée au rythme actuel ; notification quand il devient échangeable.
+- Alerte avant la fin d'une quête : une quête pas terminée qui expire dans moins de 48 heures est signalée (une fois) et marquée « Expire dans N h ».
+- Mini-fenêtre : un clic gauche sur l'icône de la zone de notification affiche solde, tâches du jour, séries et objectif ; double-clic pour la fenêtre principale.
+- Session guidée « Faire mes tâches » : les tâches à faire s'ouvrent une par une dans la fenêtre Microsoft Rewards, avec un bandeau « Tâche suivante » ; chaque tâche reste lancée par l'utilisateur.
 - Quêtes suivies : une étoile sur chaque quête pour la retrouver, avec toutes ses étapes, dans une page dédiée.
 - Actualisation automatique des points, séries et quêtes toutes les N minutes (réglable, 30 par défaut).
 - Récompenses par jeu : recherche d'un jeu (ex. Sea of Thieves) pour voir les quêtes en cours qui le concernent (cartes à poinçonner avec leurs étapes, lien vers la page de la quête) et les articles du catalogue d'échange (prix, points manquants).

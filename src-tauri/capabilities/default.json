@@ -1,8 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Permissions de la fenêtre principale. La fenêtre de connexion Microsoft n'en reçoit aucune.",
-  "windows": ["main"],
+  "description": "Permissions des fenêtres de l'application (principale et mini-fenêtre). Les fenêtres qui affichent un site Microsoft n'en reçoivent aucune.",
+  "windows": [
+    "main",
+    "mini"
+  ],
   "permissions": [
     "core:default"
   ]
