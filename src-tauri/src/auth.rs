@@ -299,6 +299,21 @@ fn fill_pending_query<R: Runtime>(window: &tauri::WebviewWindow<R>, url: &Url) {
     }
 }
 
+/// Lien vers un réglage d'Edge (`microsoft-edge://?ux=searchbar`…) : WebView2 ne sait pas
+/// l'ouvrir, on le confie à Windows, qui le passe à Edge comme depuis le site officiel.
+/// Seul ce protocole est accepté. Renvoie `true` si le lien a été pris en charge.
+fn launch_edge_link<R: Runtime>(app: &AppHandle<R>, url: &Url) -> bool {
+    if url.scheme() != "microsoft-edge" {
+        return false;
+    }
+    use tauri_plugin_opener::OpenerExt;
+    if let Err(err) = app.opener().open_url(url.as_str(), None::<&str>) {
+        log::warn!("Ouverture du lien Edge impossible : {err}");
+    }
+    let _ = app.emit("rewards-site-navigated", url.as_str());
+    true
+}
+
 /// Fenêtre de recherche demandée par le site (recherche Bing, quiz…). L'application la crée
 /// elle-même, dans la même session WebView2, pour pouvoir y remplir le champ de recherche.
 /// Une seule à la fois : la précédente est fermée, pour ne pas les accumuler.
@@ -327,11 +342,15 @@ fn open_search_window<R: Runtime>(
     .on_document_title_changed(|window, title| {
         let _ = window.set_title(&title);
     })
-    .on_new_window(|url, _| {
-        if url.scheme() == "https" {
-            NewWindowResponse::Allow
-        } else {
-            NewWindowResponse::Deny
+    .on_new_window({
+        let handle = app.clone();
+        move |url, _| {
+            if url.scheme() == "https" {
+                NewWindowResponse::Allow
+            } else {
+                launch_edge_link(&handle, &url);
+                NewWindowResponse::Deny
+            }
         }
     })
     .on_page_load(move |window, payload| {
@@ -382,6 +401,9 @@ pub fn open_site<R: Runtime>(
         .on_navigation({
             let handle = app.clone();
             move |url| {
+                if launch_edge_link(&handle, url) {
+                    return false;
+                }
                 let Some(action) = url.path().strip_prefix(GUIDE_PATH) else {
                     return true;
                 };
@@ -403,6 +425,7 @@ pub fn open_site<R: Runtime>(
             let handle = app.clone();
             move |url, features| {
                 if url.scheme() != "https" {
+                    launch_edge_link(&handle, &url);
                     return NewWindowResponse::Deny;
                 }
                 let _ = handle.emit("rewards-site-navigated", url.as_str());
