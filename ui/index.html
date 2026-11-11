@@ -206,20 +206,6 @@
         <h1>Paramètres</h1>
 
         <article class="panel">
-          <h2>Mode de fonctionnement</h2>
-          <div class="choices">
-            <label class="choice">
-              <input type="radio" name="mode" value="reminders" id="mode-reminders">
-              <span><b>Rappels</b><br><span class="muted">L'application ne lance rien. Elle vous envoie chaque jour une notification avec ce qu'il reste à faire.</span></span>
-            </label>
-            <label class="choice disabled">
-              <input type="radio" name="mode" value="automatic" id="mode-automatic" disabled>
-              <span><b>Automatique</b> <span class="tag">Bientôt</span><br><span class="muted">Lancement des jeux Game Pass installés à tour de rôle. Le règlement Microsoft Rewards interdit les outils automatisés : votre compte pourrait être suspendu.</span></span>
-            </label>
-          </div>
-        </article>
-
-        <article class="panel">
           <h2>Rappel quotidien</h2>
           <div class="form">
             <label for="reminder-time">Heure du rappel</label>
@@ -232,7 +218,9 @@
             <label class="check"><input type="checkbox" id="remind-streaks"> Séries dont l'étape du jour n'est pas faite (un jour manqué remet la série à zéro)</label>
             <span></span>
             <label class="check"><input type="checkbox" id="notify-unlocks"> Prévenir dès qu'une tâche verrouillée se déverrouille (étape de quête, activité)</label>
+            <span></span>
             <label class="check"><input type="checkbox" id="notify-expiring"> Prévenir quand une quête pas terminée expire dans moins de 48 heures</label>
+            <span></span>
             <label class="check"><input type="checkbox" id="notify-new-searches"> Prévenir de chaque nouvelle recherche Bing : un clic sur la notification la lance, puis referme les fenêtres une fois la recherche faite</label>
             <span></span>
             <div><button class="btn" id="test-reminder">Envoyer le rappel maintenant</button> <span class="muted small" id="test-reminder-result"></span></div>

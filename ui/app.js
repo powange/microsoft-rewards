@@ -99,10 +99,34 @@ function openTask(url, click = null, query = null, title = null, guide = null) {
 
 // Chaque page chargée dans la fenêtre Rewards (un clic sur une activité, une étape…)
 // déclenche une actualisation 10 secondes plus tard ; la fermeture de la fenêtre aussi.
-listen("rewards-site-navigated", () => {
+/**
+ * Certaines recherches sont créditées plus tard : si rien n'a changé 10 s après une tâche,
+ * une seconde actualisation a lieu 60 s après. Le délai est affiché dans la barre latérale.
+ */
+const TASK_RECHECK_DELAY_MS = 60_000;
+const summarySignature = (s) => s ? `${s.availablePoints}|${JSON.stringify(s.searches)}|${[...s.dailySet, ...s.more].filter((a) => a.complete).length}` : "";
+let refreshCountdown;
+
+function scheduleTaskRefresh(delay, recheck) {
   clearTimeout(taskRefreshTimer);
-  taskRefreshTimer = setTimeout(refresh, TASK_REFRESH_DELAY_MS);
-});
+  clearInterval(refreshCountdown);
+  const due = Date.now() + delay;
+  const label = $("side-refresh");
+  const tick = () => {
+    if (refreshing) return;
+    label.textContent = `↻ Actualisation dans ${Math.max(0, Math.ceil((due - Date.now()) / 1000))} s`;
+  };
+  tick();
+  refreshCountdown = setInterval(tick, 1000);
+  taskRefreshTimer = setTimeout(async () => {
+    clearInterval(refreshCountdown);
+    const before = summarySignature(state.summary);
+    await refresh();
+    if (recheck && summarySignature(state.summary) === before) scheduleTaskRefresh(TASK_RECHECK_DELAY_MS, false);
+  }, delay);
+}
+
+listen("rewards-site-navigated", () => scheduleTaskRefresh(TASK_REFRESH_DELAY_MS, true));
 listen("rewards-site-closed", () => refresh());
 
 /** Vignette à gauche du titre, comme sur le site Rewards et dans l'app Xbox. */
@@ -271,7 +295,12 @@ function renderSearchesToDo(summary) {
           " ", kindTag("searchManual")),
         h("div", { class: "desc" }, mobile
           ? `${c.progress} / ${c.max} pts · à faire dans l'application Bing de votre téléphone, connectée au même compte`
-          : `${c.label} : ${c.progress} / ${c.max} pts`)),
+          : `${c.label} : ${c.progress} / ${c.max} pts`),
+        mobile ? h("details", { class: "qr-details" },
+          h("summary", {}, "Pas encore l'application Bing ? Code QR"),
+          h("div", { class: "qr-body" },
+            h("img", { class: "qr", src: "bing-app-qr.svg", width: "132", height: "132", alt: "Code QR vers l'application Bing pour iPhone et Android" }),
+            h("span", { class: "muted small" }, "Scannez-le avec l'appareil photo du téléphone, puis connectez l'application au même compte Microsoft."))) : null),
       h("span", { class: "pts" }, `${c.max - c.progress} pts`)));
   }
   $("bing-todo").replaceChildren(...(items.length ? items
@@ -417,6 +446,7 @@ async function refresh({ force = false } = {}) {
   if (refreshing) return;
   refreshing = true;
   clearTimeout(taskRefreshTimer);
+  clearInterval(refreshCountdown);
   const buttons = [$("refresh-btn"), $("side-refresh")];
   for (const button of buttons) button.disabled = true;
   $("side-refresh").textContent = "Actualisation…";
@@ -454,7 +484,9 @@ $("login-btn").addEventListener("click", async () => {
 $("logout-btn").addEventListener("click", async () => {
   try {
     await invoke("logout");
-    toast("Compte déconnecté.");
+    Object.assign(xboxLive, { status: { connected: false, gamertag: null }, rewards: null, error: null });
+    renderXboxLive();
+    toast("Comptes Microsoft et Xbox Live déconnectés.");
   } catch (err) {
     toast(String(err));
   }
@@ -572,11 +604,18 @@ function renderXboxLive() {
       h("button", { class: "btn small", type: "button", disabled: loading, onclick: () => loadXbox(true) }, loading ? "Actualisation…" : "Actualiser"),
       h("button", { class: "btn small ghost", type: "button", onclick: xboxLogout }, "Se déconnecter")));
 
-  const parts = [head];
+  // Refus du service : l'encart se replie, le suivi manuel prend la place.
   if (refused) {
-    parts.push(h("div", { class: "banner danger" },
-      h("span", {}, "Le service Xbox des quêtes a refusé la connexion de Rewards Autoplay : il n'accepte sans doute que l'app Xbox elle-même. Le suivi manuel ci-dessous reste disponible.")));
-  } else if (error) {
+    box.replaceChildren(h("details", { class: "xbox-refused" },
+      h("summary", {}, "Quêtes Xbox réelles indisponibles ", h("span", { class: "tag" }, "Expérimental")),
+      h("p", { class: "muted small" }, `Connecté${status.gamertag ? ` en tant que ${status.gamertag}` : ""}, mais le service des quêtes de Microsoft n'accepte que l'app Xbox elle-même. Le suivi manuel ci-dessous le remplace ; un nouvel essai a lieu une fois par jour.`),
+      h("span", { class: "btnrow" },
+        h("button", { class: "btn small", type: "button", disabled: loading, onclick: () => loadXbox(true) }, loading ? "Essai…" : "Réessayer"),
+        h("button", { class: "btn small ghost", type: "button", onclick: xboxLogout }, "Se déconnecter de Xbox Live"))));
+    return;
+  }
+  const parts = [head];
+  if (error) {
     parts.push(h("div", { class: "banner danger" }, h("span", {}, `Quêtes Xbox illisibles : ${error}`)));
   } else if (!rewards) {
     parts.push(h("p", { class: "muted" }, "Chargement des quêtes Xbox…"));
@@ -1056,9 +1095,20 @@ $("catalog-refresh").addEventListener("click", () => loadCatalog(true));
 
 // ---------- Paramètres ----------
 
-async function saveSettings() {
+/** « Enregistré ✓ » quelques instants à côté du réglage modifié. */
+function flashSaved(control) {
+  const anchor = control?.closest("label, .inline-field") ?? control;
+  if (!anchor) return;
+  anchor.parentElement.querySelector(":scope > .saved")?.remove();
+  const mark = h("span", { class: "saved", role: "status" }, "Enregistré ✓");
+  anchor.after(mark);
+  setTimeout(() => mark.remove(), 1800);
+}
+
+async function saveSettings(control) {
   state.settings = {
-    mode: document.querySelector('input[name="mode"]:checked')?.value ?? "reminders",
+    // Seul le mode « Rappels » existe : rien n'est lancé sans l'utilisateur.
+    mode: "reminders",
     reminderTime: $("reminder-time").value || "19:00",
     remindBing: $("remind-bing").checked,
     remindXbox: $("remind-xbox").checked,
@@ -1072,13 +1122,18 @@ async function saveSettings() {
     autoInstallUpdates: $("auto-install").checked,
     refreshIntervalMinutes: refreshMinutesInput(),
   };
-  await invoke("save_settings", { settings: state.settings });
+  try {
+    await invoke("save_settings", { settings: state.settings });
+    flashSaved(control);
+  } catch (err) {
+    toast(`Réglage non enregistré : ${err}`);
+    return;
+  }
   renderXbox(await invoke("xbox_progress"));
 }
 
 function renderSettings(settings) {
   state.settings = settings;
-  $(`mode-${settings.mode}`).checked = true;
   $("reminder-time").value = settings.reminderTime;
   $("remind-bing").checked = settings.remindBing;
   $("remind-xbox").checked = settings.remindXbox;
@@ -1122,8 +1177,8 @@ function refreshMinutesInput() {
   return minutes;
 }
 
-for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval", "mode-reminders"]) {
-  $(id).addEventListener("change", saveSettings);
+for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval"]) {
+  $(id).addEventListener("change", () => saveSettings($(id)));
 }
 
 $("auto-update").addEventListener("change", renderUpdateControls);

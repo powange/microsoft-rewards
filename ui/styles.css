@@ -254,3 +254,13 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 /* Quête qui expire bientôt (N3) */
 .tag.expiring { background: var(--danger-soft); color: var(--danger); }
 .tag.kind-edgeSetting { background: var(--info-soft); color: var(--info); }
+
+/* Frictions */
+.saved { margin-left: 8px; font-size: 12px; font-weight: 600; color: var(--accent); }
+.xbox-refused summary { cursor: pointer; font-weight: 600; }
+.xbox-refused p { margin: 8px 0; }
+.qr-details { margin-top: 6px; }
+.qr-details summary { cursor: pointer; font-size: 13px; color: var(--accent); }
+.qr-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-top: 8px; }
+.qr { background: #fff; padding: 8px; border-radius: 8px; border: 1px solid var(--line); }
+.xbox-connect .tag { justify-self: start; }

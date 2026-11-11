@@ -520,6 +520,8 @@ async fn login(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn logout(app: AppHandle) -> Result<(), String> {
     auth::logout(&app).await?;
+    // La déconnexion vaut aussi pour Xbox Live, dont le jeton est rangé à part.
+    xbox::logout(&app);
     let state = app.state::<AppState>();
     *state.summary.lock().unwrap() = None;
     *state.catalog.lock().unwrap() = None;
