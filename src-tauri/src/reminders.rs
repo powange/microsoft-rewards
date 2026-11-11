@@ -44,6 +44,10 @@ async fn refresh_xbox<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Si les données Rewards ne peuvent pas être lues (réseau absent à la sortie de veille…),
+/// le rappel est retenté chaque minute pendant ce délai, puis envoyé avec ce qui est connu.
+const REMINDER_RETRY: Duration = Duration::from_secs(30 * 60);
+
 /// Un rappel par jour, dès que l'heure choisie est passée (ou au démarrage si elle l'est déjà).
 async fn maybe_remind<R: Runtime>(app: &AppHandle<R>, settings: &Settings) {
     let now = Local::now();
@@ -52,21 +56,35 @@ async fn maybe_remind<R: Runtime>(app: &AppHandle<R>, settings: &Settings) {
     if state.store.last_reminder() == Some(today) || now.time() < settings.reminder_time() {
         return;
     }
+    let (lines, complete) = todo_lines(app, settings).await;
+    let late = (now.time() - settings.reminder_time())
+        .to_std()
+        .is_ok_and(|d| d >= REMINDER_RETRY);
+    if !complete && !late {
+        log::info!("Rappel reporté : données Rewards illisibles pour le moment");
+        return;
+    }
     state.store.set_last_reminder(today);
-    send(app, settings).await;
+    notify_lines(app, &lines);
 }
 
 /// Calcule la liste des tâches restantes et l'envoie en notification. Renvoie les lignes envoyées.
 pub async fn send<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Vec<String> {
-    let lines = todo_lines(app, settings).await;
-    if !lines.is_empty() {
-        crate::notify(app, "À faire aujourd'hui pour Rewards", &lines.join("\n"));
-    }
+    let (lines, _) = todo_lines(app, settings).await;
+    notify_lines(app, &lines);
     lines
 }
 
-async fn todo_lines<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Vec<String> {
+fn notify_lines<R: Runtime>(app: &AppHandle<R>, lines: &[String]) {
+    if !lines.is_empty() {
+        crate::notify(app, "À faire aujourd'hui pour Rewards", &lines.join("\n"));
+    }
+}
+
+/// Lignes du rappel, et `false` si les données Rewards n'ont pas pu être lues.
+async fn todo_lines<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> (Vec<String>, bool) {
     let mut lines = Vec::new();
+    let mut complete = true;
     if settings.remind_bing || settings.remind_streaks {
         match crate::refresh(app).await {
             Ok(summary) => {
@@ -110,49 +128,65 @@ async fn todo_lines<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Vec<
             Err(FetchError::NotLoggedIn) => {
                 lines.push("Connectez-vous dans Rewards Autoplay pour suivre vos points".into())
             }
-            Err(err) => log::warn!("Rappel sans données Rewards : {err}"),
+            Err(err) => {
+                complete = false;
+                log::warn!("Rappel sans données Rewards : {err}");
+            }
         }
     }
-    if settings.remind_xbox && crate::xbox::status(app).connected {
-        // Données réelles du Rewards Hub de l'app Xbox.
-        if let Ok(rewards) = crate::xbox::refresh(app).await {
-            for mission in rewards
-                .missions
-                .iter()
-                .filter(|m| m.kind == "single" && m.status == "active")
-            {
-                lines.push(format!(
-                    "Xbox : {} (+{} pts)",
-                    mission.title, mission.points
-                ));
-            }
-            for mission in rewards
-                .missions
-                .iter()
-                .filter(|m| m.kind == "streak" && m.current.is_some())
-            {
-                lines.push(format!(
-                    "Xbox : {} ({}/{})",
-                    mission.title,
-                    mission.count.unwrap_or(0),
-                    mission.target.unwrap_or(0)
-                ));
-            }
-            if rewards.unclaimed > 0 {
-                lines.push(format!(
-                    "Xbox : {} points à réclamer dans l'app Xbox",
-                    rewards.unclaimed
-                ));
+    if settings.remind_xbox {
+        // Données réelles du Rewards Hub de l'app Xbox si le service répond, sinon le suivi
+        // manuel : un compte Xbox Live connecté mais refusé ne doit pas faire perdre le rappel.
+        let live = if crate::xbox::status(app).connected {
+            crate::xbox::refresh(app).await.ok()
+        } else {
+            None
+        };
+        match live {
+            Some(rewards) => lines.extend(xbox_lines(&rewards)),
+            None => {
+                let xbox = app.state::<AppState>().store.xbox_progress();
+                if !xbox.today_done {
+                    lines.push(format!(
+                        "Xbox : jouer 15 min à un jeu Game Pass ({}/{} jours cette semaine)",
+                        xbox.week_days, xbox.week_target
+                    ));
+                }
             }
         }
-    } else if settings.remind_xbox {
-        let xbox = app.state::<AppState>().store.xbox_progress();
-        if !xbox.today_done {
-            lines.push(format!(
-                "Xbox : jouer 15 min à un jeu Game Pass ({}/{} jours cette semaine)",
-                xbox.week_days, xbox.week_target
-            ));
-        }
+    }
+    (lines, complete)
+}
+
+fn xbox_lines(rewards: &crate::xbox::XboxRewards) -> Vec<String> {
+    let mut lines = Vec::new();
+    for mission in rewards
+        .missions
+        .iter()
+        .filter(|m| m.kind == "single" && m.status == "active")
+    {
+        lines.push(format!(
+            "Xbox : {} (+{} pts)",
+            mission.title, mission.points
+        ));
+    }
+    for mission in rewards
+        .missions
+        .iter()
+        .filter(|m| m.kind == "streak" && m.current.is_some())
+    {
+        lines.push(format!(
+            "Xbox : {} ({}/{})",
+            mission.title,
+            mission.count.unwrap_or(0),
+            mission.target.unwrap_or(0)
+        ));
+    }
+    if rewards.unclaimed > 0 {
+        lines.push(format!(
+            "Xbox : {} points à réclamer dans l'app Xbox",
+            rewards.unclaimed
+        ));
     }
     lines
 }

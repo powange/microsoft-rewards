@@ -69,7 +69,13 @@ pub struct XboxState {
     /// (state, code_verifier) de la connexion en cours.
     pending_login: Mutex<Option<(String, String)>>,
     cache: Mutex<Option<(Instant, XboxRewards)>>,
+    /// Refus du service des quêtes (403) : il n'est plus interrogé avant cette date, pour ne
+    /// pas l'appeler toutes les 30 minutes en vain.
+    refused: Mutex<Option<(Instant, String)>>,
 }
+
+/// Délai avant de réessayer un service des quêtes qui a refusé l'accès.
+const REFUSED_PAUSE: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,6 +156,8 @@ pub fn open_login<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let state = random_string(16);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     *app.state::<AppState>().xbox.pending_login.lock().unwrap() = Some((state.clone(), verifier));
+    // Nouvelle connexion : le service des quêtes est réinterrogé tout de suite.
+    *app.state::<AppState>().xbox.refused.lock().unwrap() = None;
 
     let mut url = Url::parse(AUTHORIZE_URL).unwrap();
     url.query_pairs_mut()
@@ -246,6 +254,7 @@ pub fn logout<R: Runtime>(app: &AppHandle<R>) {
     let state = app.state::<AppState>();
     *state.xbox.token.lock().unwrap() = None;
     *state.xbox.cache.lock().unwrap() = None;
+    *state.xbox.refused.lock().unwrap() = None;
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
         let _ = entry.delete_credential();
     }
@@ -416,9 +425,18 @@ async fn valid_token<R: Runtime>(app: &AppHandle<R>) -> Result<XboxToken, XboxEr
 
 /// Relit les quêtes Xbox, met le cache à jour et prévient l'interface.
 pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<XboxRewards, XboxError> {
-    let result = fetch(app).await;
     let state = app.state::<AppState>();
+    if let Some((at, reason)) = state.xbox.refused.lock().unwrap().as_ref() {
+        if at.elapsed() < REFUSED_PAUSE {
+            return Err(XboxError::Refused(reason.clone()));
+        }
+    }
+    let result = fetch(app).await;
     match &result {
+        Err(XboxError::Refused(reason)) => {
+            *state.xbox.refused.lock().unwrap() = Some((Instant::now(), reason.clone()));
+            log::warn!("Service des quêtes Xbox refusé, nouvel essai dans 24 h : {reason}");
+        }
         Ok(rewards) => {
             *state.xbox.cache.lock().unwrap() = Some((Instant::now(), rewards.clone()));
             let _ = app.emit("xbox-rewards-updated", rewards);

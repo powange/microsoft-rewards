@@ -157,6 +157,17 @@ jobs:
     permissions:
       contents: write  # create the GitHub release
     steps:
+    # Only to read the message of the tagged commit, used as release notes.
+    - uses: actions/checkout@v7
+      with:
+        sparse-checkout: README.md
+
+    - name: Release notes from the commit message
+      run: |
+        # "Correctifs … (v0.2.20)" -> "Correctifs …"
+        notes="$(git log -1 --pretty=%s | sed -E 's/ *\(v[0-9.]+\)$//')"
+        echo "RELEASE_NOTES=$notes" >> "$GITHUB_ENV"
+
     - uses: actions/download-artifact@v7
       with:
         name: release-windows
@@ -171,7 +182,7 @@ jobs:
         jq -n \
           --arg version "${GITHUB_REF_NAME#v}" \
           --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          --arg notes "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}" \
+          --arg notes "$RELEASE_NOTES" \
           --arg sig "$(cat RewardsAutoplay_Setup.exe.sig)" --arg url "$base/RewardsAutoplay_Setup.exe" \
           '{version: $version, notes: $notes, pub_date: $date, platforms: {
              "windows-x86_64": {signature: $sig, url: $url}}}' > latest.json
@@ -186,6 +197,8 @@ jobs:
           dist/latest.json
         generate_release_notes: true
         body: |
+          ${{ env.RELEASE_NOTES }}
+
           ## Installation
           Téléchargez `RewardsAutoplay_Setup.exe` et lancez-le. Les versions déjà installées se mettent à jour depuis l'application (Paramètres › Mises à jour, ou le menu de l'icône dans la zone de notification).
 

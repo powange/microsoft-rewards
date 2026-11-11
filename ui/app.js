@@ -116,6 +116,7 @@ const KIND_TAGS = {
   quiz: ["❓ Quiz", "Quiz à jouer sur Bing : répondez aux questions."],
   puzzle: ["🧩 Puzzle", "Puzzle d'images à terminer sur Bing."],
   partner: ["Site partenaire", "La tâche se fait sur le site d'un partenaire."],
+  edgeSetting: ["Réglage Edge", "La tâche se fait dans le navigateur Edge (barre de recherche, moteur par défaut…)."],
 };
 
 function kindTag(kind) {
@@ -146,8 +147,16 @@ function activityItem(activity) {
     h("span", { class: "pts" }, activity.points ? `${activity.points} pts` : ""));
 }
 
+/** La date du jour change pendant que l'application reste des jours dans la zone de notification. */
+function renderToday() {
+  $("today-date").textContent = dateFormat.format(new Date());
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) renderToday(); });
+window.addEventListener("focus", renderToday);
+
 function renderSummary(summary) {
   state.summary = summary;
+  renderToday();
   $("points").textContent = numberFormat.format(summary.availablePoints);
   const level = [];
   if (summary.level) level.push(`Niveau : ${summary.level}`);
@@ -155,6 +164,7 @@ function renderSummary(summary) {
   $("level").textContent = level.join(" · ");
   const claim = $("claim");
   claim.hidden = false;
+  claim.disabled = summary.claimablePoints <= 0;
   claim.classList.toggle("ready", summary.claimablePoints > 0);
   claim.textContent = summary.claimablePoints > 0
     ? `${numberFormat.format(summary.claimablePoints)} points prêts à réclamer · Réclamer ↗`
@@ -222,11 +232,16 @@ function renderSearchesToDo(summary) {
     }))),
   ];
   tasks.sort((a, b) => Number(a.kind !== "search") - Number(b.kind !== "search") || b.points - a.points);
-  const left = summary.searches.reduce((sum, c) => sum + Math.max(0, c.max - c.progress), 0);
+  const leftOf = (mobile) => summary.searches
+    .filter((c) => /mobile/i.test(c.label) === mobile)
+    .reduce((sum, c) => sum + Math.max(0, c.max - c.progress), 0);
+  const pcLeft = leftOf(false);
+  const mobileLeft = leftOf(true);
 
   const info = [];
   if (tasks.length) info.push(`${tasks.length} tâche${tasks.length > 1 ? "s" : ""}`);
-  if (left) info.push(`${left} pts de recherche quotidiens restants`);
+  if (pcLeft) info.push(`${pcLeft} pts de recherche sur PC`);
+  if (mobileLeft) info.push(`${mobileLeft} pts sur mobile`);
   $("bing-todo-info").textContent = info.join(" · ");
 
   const items = tasks.map((t) => h("li", {},
@@ -237,16 +252,21 @@ function renderSearchesToDo(summary) {
         " ", kindTag(t.kind)),
       t.context ? h("div", { class: "desc" }, t.context) : null),
     h("span", { class: "pts" }, t.points ? `${t.points} pts` : "")));
-  if (left) {
+  // Recherches libres : celles sur ordinateur se font ici, celles sur mobile dans l'application
+  // Bing du téléphone. Une ligne chacune, pour ne pas promettre des points inaccessibles sur PC.
+  for (const c of summary.searches.filter((c) => c.max > c.progress)) {
+    const mobile = /mobile/i.test(c.label);
     items.push(h("li", {},
       h("span", { class: "state", "aria-label": "À faire" }),
       h("div", { class: "item-text" },
         h("div", { class: "title" },
-          h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(BING_URL); } }, "Recherches libres sur Bing"),
+          mobile ? "Recherches libres sur mobile"
+            : h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(BING_URL); } }, "Recherches libres sur Bing"),
           " ", kindTag("searchManual")),
-        h("div", { class: "desc" }, summary.searches.filter((c) => c.max > c.progress)
-          .map((c) => `${c.label} : ${c.progress} / ${c.max} pts`).join(" · "))),
-      h("span", { class: "pts" }, `${left} pts`)));
+        h("div", { class: "desc" }, mobile
+          ? `${c.progress} / ${c.max} pts · à faire dans l'application Bing de votre téléphone, connectée au même compte`
+          : `${c.label} : ${c.progress} / ${c.max} pts`)),
+      h("span", { class: "pts" }, `${c.max - c.progress} pts`)));
   }
   $("bing-todo").replaceChildren(...(items.length ? items
     : [h("li", { class: "empty" }, "Toutes les recherches Bing du jour sont faites ✓")]));
@@ -312,7 +332,8 @@ async function refresh() {
   for (const button of buttons) button.disabled = true;
   $("side-refresh").textContent = "Actualisation…";
   try {
-    renderSummary(await invoke("refresh_rewards"));
+    const summary = await invoke("refresh_rewards");
+    if (isNewSummary(summary)) renderSummary(summary);
     setLoggedIn(true);
   } catch (err) {
     if (String(err) === "not_logged_in") {
@@ -350,8 +371,11 @@ $("logout-btn").addEventListener("click", async () => {
   }
 });
 
+// La commande d'actualisation et cet événement portent la même lecture : elle n'est affichée qu'une fois.
+const isNewSummary = (summary) => state.summary?.fetchedAt !== summary.fetchedAt;
+
 listen("rewards-updated", (event) => {
-  renderSummary(event.payload);
+  if (isNewSummary(event.payload)) renderSummary(event.payload);
   setLoggedIn(true);
   $("login-hint").hidden = true;
 });
@@ -856,7 +880,12 @@ $("open-logs").addEventListener("click", () => invoke("open_logs").catch((err) =
 
 function showUpdate(info) {
   $("update-title").textContent = `Version ${info.version} disponible (vous avez la ${info.currentVersion})`;
-  $("update-notes").textContent = info.notes ?? "";
+  const release = `https://github.com/powange/microsoft-rewards/releases/tag/v${info.version}`;
+  // Les anciennes versions publiaient l'adresse de la release à la place des nouveautés.
+  const notes = info.notes && !info.notes.startsWith("https://") ? info.notes : "";
+  $("update-notes").replaceChildren(
+    ...(notes ? [notes, " · "] : []),
+    h("a", { href: "#", onclick: (e) => { e.preventDefault(); openUrl(release); } }, "Voir la release ↗"));
   $("update-box").hidden = false;
   $("update-banner-text").textContent = `La version ${info.version} de Rewards Autoplay est disponible.`;
   $("update-banner").hidden = false;
@@ -911,7 +940,7 @@ listen("check-update-requested", () => {
 // ---------- Démarrage ----------
 
 (async function init() {
-  $("today-date").textContent = dateFormat.format(new Date());
+  renderToday();
   const [info, settings, autostart, xbox, cached, followed] = await Promise.all([
     invoke("app_info"),
     invoke("get_settings"),

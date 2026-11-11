@@ -1,7 +1,7 @@
 //! Réglages et historique local, enregistrés dans un fichier JSON du dossier de données de l'app.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::{Datelike, Local, NaiveDate, NaiveTime};
@@ -143,31 +143,82 @@ pub struct XboxProgress {
 pub struct Store {
     path: PathBuf,
     data: Mutex<Persisted>,
+    /// Problème rencontré à la lecture du fichier d'état, à signaler à l'utilisateur.
+    load_warning: Option<String>,
+}
+
+/// Lit un fichier d'état. `Ok(None)` : le fichier n'existe pas (premier lancement).
+fn read_state(path: &Path) -> Result<Option<Persisted>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn with_extension(path: &Path, extension: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(extension);
+    PathBuf::from(name)
 }
 
 impl Store {
+    /// Charge l'état. Un fichier illisible n'est jamais écrasé en silence : il est mis de côté
+    /// (`.bad`), la dernière sauvegarde (`.bak`) est reprise si elle existe, et l'utilisateur
+    /// est prévenu.
     pub fn load(path: PathBuf) -> Self {
-        let data = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
+        let (data, load_warning) = match read_state(&path) {
+            Ok(data) => (data.unwrap_or_default(), None),
+            Err(err) => {
+                log::error!("Fichier d'état illisible {} : {err}", path.display());
+                let _ = std::fs::copy(&path, with_extension(&path, ".bad"));
+                match read_state(&with_extension(&path, ".bak")) {
+                    Ok(Some(backup)) => (
+                        backup,
+                        Some("Le fichier des réglages était abîmé : la dernière sauvegarde a été reprise.".to_string()),
+                    ),
+                    _ => (
+                        Persisted::default(),
+                        Some("Le fichier des réglages était abîmé : réglages et quêtes suivies sont repartis de zéro. L'ancien fichier est gardé à côté (state.json.bad).".to_string()),
+                    ),
+                }
+            }
+        };
         Self {
             path,
             data: Mutex::new(data),
+            load_warning,
         }
     }
 
+    pub fn load_warning(&self) -> Option<&str> {
+        self.load_warning.as_deref()
+    }
+
+    /// Écrit dans un fichier temporaire puis le renomme : une coupure pendant l'écriture laisse
+    /// l'ancien fichier intact. La version précédente est gardée en `.bak`.
     fn save(&self, data: &Persisted) {
         if let Some(dir) = self.path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match serde_json::to_string_pretty(data) {
-            Ok(text) => {
-                if let Err(err) = std::fs::write(&self.path, text) {
-                    log::error!("Impossible d'enregistrer {}: {err}", self.path.display());
-                }
+        let text = match serde_json::to_string_pretty(data) {
+            Ok(text) => text,
+            Err(err) => {
+                log::error!("Sérialisation de l'état impossible : {err}");
+                return;
             }
-            Err(err) => log::error!("Sérialisation de l'état impossible: {err}"),
+        };
+        let tmp = with_extension(&self.path, ".tmp");
+        let result = std::fs::write(&tmp, text).and_then(|()| {
+            if read_state(&self.path).is_ok_and(|d| d.is_some()) {
+                let _ = std::fs::copy(&self.path, with_extension(&self.path, ".bak"));
+            }
+            std::fs::rename(&tmp, &self.path)
+        });
+        if let Err(err) = result {
+            log::error!("Impossible d'enregistrer {} : {err}", self.path.display());
         }
     }
 
@@ -340,5 +391,29 @@ mod tests {
         // Relancée, l'application retrouve la liste de la dernière actualisation.
         assert_eq!(store.reload().swap_locked_tasks(BTreeSet::new()), first);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn un_fichier_abime_n_est_pas_ecrase_en_silence() {
+        let path = std::env::temp_dir().join(format!(
+            "rewards-autoplay-corrupt-{}.json",
+            std::process::id()
+        ));
+        let store = Store::load(path.clone());
+        store.set_followed("sot", "Sea of Thieves", None, None, true);
+        // Deuxième enregistrement : la version précédente part en sauvegarde.
+        store.set_followed("duo", "Duolingo", None, None, true);
+        std::fs::write(&path, "{ abîmé").unwrap();
+
+        let reloaded = Store::load(path.clone());
+        assert!(reloaded.load_warning().is_some());
+        assert_eq!(reloaded.followed_quests().len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(with_extension(&path, ".bad")).unwrap(),
+            "{ abîmé"
+        );
+        for ext in ["", ".bak", ".bad"] {
+            let _ = std::fs::remove_file(with_extension(&path, ext));
+        }
     }
 }

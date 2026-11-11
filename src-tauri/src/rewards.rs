@@ -76,6 +76,8 @@ pub enum TaskKind {
     Puzzle,
     /// Site partenaire (Duolingo, YouTube…).
     Partner,
+    /// Réglage du navigateur Edge (lien `microsoft-edge://`, barre de recherche…).
+    EdgeSetting,
 }
 
 impl TaskKind {
@@ -566,7 +568,7 @@ fn activity_with(object: &Map<String, Value>, allow_zero: bool) -> Option<Activi
         url: object
             .get("destination")
             .and_then(Value::as_str)
-            .filter(|u| u.starts_with("https://"))
+            .filter(|u| is_task_link(u))
             .map(str::to_string),
         image_url: object
             .get("imageUrl")
@@ -618,7 +620,7 @@ fn card_activity(object: &Map<String, Value>, text: &str) -> Option<Activity> {
                 .filter(|u| u.starts_with("https://"))
                 .map(str::to_string);
         }
-        Value::String(text) if note.is_none() && text.to_lowercase().contains("verrouill") => {
+        Value::String(text) if note.is_none() && is_lock_note(text) => {
             note = Some(text.clone());
         }
         _ => {}
@@ -633,7 +635,7 @@ fn card_activity(object: &Map<String, Value>, text: &str) -> Option<Activity> {
         url: object
             .get("href")
             .and_then(Value::as_str)
-            .filter(|u| u.starts_with("https://"))
+            .filter(|u| is_task_link(u))
             .map(str::to_string),
         image_url,
         note,
@@ -1065,10 +1067,16 @@ fn task_kind(url: Option<&str>, texts: &[&str]) -> Option<TaskKind> {
         .and_then(|u| u.host_str())
         .map(str::to_lowercase)
         .unwrap_or_default();
+    // « Bing comme moteur de recherche par défaut », « barre de recherche » : des réglages,
+    // pas des recherches à faire.
     let mentions_search = || {
         texts.iter().any(|t| {
             let t = t.to_lowercase();
-            t.contains("recherch") || t.contains("search")
+            (t.contains("recherch") || t.contains("search"))
+                && !t.contains("par défaut")
+                && !t.contains("barre de recherche")
+                && !t.contains("by default")
+                && !t.contains("search bar")
         })
     };
     match (&url, host.as_str()) {
@@ -1098,9 +1106,7 @@ fn task_kind(url: Option<&str>, texts: &[&str]) -> Option<TaskKind> {
             }
         }
         (None, _) => mentions_search().then_some(TaskKind::SearchManual),
-        (Some(url), _) if url.scheme() == "microsoft-edge" => {
-            mentions_search().then_some(TaskKind::SearchManual)
-        }
+        (Some(url), _) if url.scheme() == "microsoft-edge" => Some(TaskKind::EdgeSetting),
         (Some(_), host) => {
             let microsoft = [
                 "bing.com",
@@ -1161,6 +1167,17 @@ fn search_query(texts: &[&str]) -> Option<String> {
             .trim();
         (query.chars().count() >= 3 && query.chars().count() <= 120).then(|| query.to_string())
     })
+}
+
+/// Lien d'une tâche : page web, ou réglage d'Edge (`microsoft-edge://?ux=searchbar`).
+fn is_task_link(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("microsoft-edge:")
+}
+
+/// Mention de verrouillage affichée sur une carte (« Déverrouille demain », « Unlocks tomorrow »).
+fn is_lock_note(text: &str) -> bool {
+    let t = text.to_lowercase();
+    t.contains("verrouill") || t.contains("unlock") || t.contains("locked")
 }
 
 fn as_int(value: &Value) -> Option<i64> {
@@ -1413,6 +1430,20 @@ c:{{"UnlockCriteria":{{"newLevel2":"Niveau Argent requis","tomorrow":"Déverroui
             Some(TaskKind::SearchManual)
         );
         assert_eq!(task_kind(None, &["Parrainez vos amis"]), None);
+        assert_eq!(
+            task_kind(
+                Some("microsoft-edge://?ux=searchbar&pc=esb004"),
+                &["Obtenez 100 points avec la barre de recherche"]
+            ),
+            Some(TaskKind::EdgeSetting)
+        );
+        assert_eq!(
+            task_kind(
+                None,
+                &["Définir Bing comme moteur de recherche par défaut pendant 14 jours"]
+            ),
+            None
+        );
     }
 
     #[test]

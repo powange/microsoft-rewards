@@ -38,6 +38,9 @@ pub struct AppState {
     pub notified_update: Mutex<Option<String>>,
     /// Dernière actualisation des données, manuelle ou automatique.
     pub last_refresh: Mutex<Option<Instant>>,
+    /// Une seule actualisation à la fois : les demandes arrivées pendant qu'une actualisation
+    /// tourne attendent sa fin et reprennent son résultat.
+    pub refresh_lock: tauri::async_runtime::Mutex<Option<Instant>>,
     pub xbox: xbox::XboxState,
 }
 
@@ -80,8 +83,27 @@ pub fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
     }
 }
 
+/// Une actualisation terminée depuis moins longtemps que ce délai est reprise telle quelle.
+const REFRESH_REUSE: Duration = Duration::from_secs(5);
+
 /// Relit le tableau de bord Rewards, met à jour le cache, le tray et l'interface.
+///
+/// Les appels simultanés (démarrage, bouton, rappel, connexion…) ne relancent pas une lecture
+/// complète : ils attendent celle en cours et reprennent son résultat.
 pub async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<RewardsSummary, FetchError> {
+    let state = app.state::<AppState>();
+    let mut finished = state.refresh_lock.lock().await;
+    if finished.is_some_and(|t| t.elapsed() < REFRESH_REUSE) {
+        if let Some(summary) = state.summary.lock().unwrap().clone() {
+            return Ok(summary);
+        }
+    }
+    let result = refresh_now(app).await;
+    *finished = Some(Instant::now());
+    result
+}
+
+async fn refresh_now<R: Runtime>(app: &AppHandle<R>) -> Result<RewardsSummary, FetchError> {
     let client = app.state::<AppState>().http.clone();
     *app.state::<AppState>().last_refresh.lock().unwrap() = Some(Instant::now());
     let result = rewards::fetch(app, &client).await;
@@ -348,6 +370,9 @@ pub fn run() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
+                // Assez d'historique pour diagnostiquer un problème survenu il y a quelques jours.
+                .max_file_size(1_000_000)
+                .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
                 .timezone_strategy(tauri_plugin_log::TimezoneStrategy::UseLocal)
                 .build(),
         )
@@ -367,8 +392,12 @@ pub fn run() {
                 catalog: Mutex::new(None),
                 notified_update: Mutex::new(None),
                 last_refresh: Mutex::new(None),
+                refresh_lock: tauri::async_runtime::Mutex::new(None),
                 xbox: xbox::XboxState::default(),
             });
+            if let Some(warning) = app.state::<AppState>().store.load_warning() {
+                notify(app.handle(), "Rewards Autoplay", warning);
+            }
             tray::create(app.handle())?;
             let restarted_minimized = take_restart_minimized(app.handle());
             if !restarted_minimized && !std::env::args().any(|arg| arg == MINIMIZED_ARG) {

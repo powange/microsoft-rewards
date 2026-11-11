@@ -99,7 +99,8 @@ const CLICK_SCRIPT: &str = r#"(() => {
   // mènent à l'accueil de Bing, plusieurs étapes d'une quête aussi. On garde celui qui
   // contient le titre de la tâche, dans son propre bloc. Si l'ambiguïté reste, on ne clique pas.
   const clean = (s) => (s || "").replace(/[\u200b\s]+/g, " ").trim().toLowerCase();
-  const wantTitle = clean(__TITLE__);
+  const rawTitle = __TITLE__;
+  const wantTitle = clean(rawTitle);
   const owns = (el, all) => {
     if (!wantTitle) return false;
     for (let n = el, depth = 0; n && depth < 8; n = n.parentElement, depth++) {
@@ -150,6 +151,26 @@ const CLICK_SCRIPT: &str = r#"(() => {
       return;
     }
     if (Date.now() - started < 20000) setTimeout(tick, 300);
+    else notFound();
+  };
+  // Tâche introuvable : on le dit plutôt que de laisser l'utilisateur attendre un clic.
+  const notFound = () => {
+    const bar = document.createElement("div");
+    bar.setAttribute("role", "status");
+    bar.style.cssText = "position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:2147483647;"
+      + "max-width:min(640px,calc(100% - 32px));padding:12px 44px 12px 16px;border-radius:10px;"
+      + "background:#1f2a24;color:#fff;font:14px/1.4 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.35)";
+    bar.textContent = "Rewards Autoplay n'a pas trouvé "
+      + (rawTitle ? "« " + rawTitle + " »" : "la tâche")
+      + " sur cette page. Cliquez dessus vous-même : c'est ce clic qui valide les points.";
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "×";
+    close.setAttribute("aria-label", "Fermer");
+    close.style.cssText = "position:absolute;right:8px;top:6px;border:0;background:none;color:#fff;font-size:20px;cursor:pointer";
+    close.onclick = () => bar.remove();
+    bar.append(close);
+    document.body.append(bar);
   };
   tick();
 })();"#;
