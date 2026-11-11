@@ -1,6 +1,7 @@
 mod auth;
 mod catalog;
 mod flight;
+mod free_games;
 mod gamepass;
 mod mini;
 mod reminders;
@@ -533,6 +534,16 @@ fn subscription_checked(state: State<AppState>) -> Option<chrono::NaiveDate> {
     state.store.subscription_checked()
 }
 
+/// Jeux du Game Pass gratuits sans abonnement (relus au plus une fois par jour sauf `force`).
+#[tauri::command]
+async fn free_game_pass_games(
+    app: AppHandle,
+    force: bool,
+) -> Result<free_games::FreeGames, String> {
+    let client = app.state::<AppState>().http.clone();
+    free_games::list(&client, force).await
+}
+
 #[tauri::command]
 fn get_goal(state: State<AppState>) -> Option<store::Goal> {
     state.store.goal()
@@ -894,6 +905,7 @@ pub fn run() {
             export_backup,
             import_backup,
             detect_subscription,
+            free_game_pass_games,
             subscription_checked,
             hide_mini,
         ])

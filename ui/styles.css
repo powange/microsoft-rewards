@@ -292,3 +292,19 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .xq-extra { display: flex; align-items: center; gap: 8px; }
 .chip-x { margin-left: 6px; border: 0; background: none; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; }
 .checks-inline { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+
+/* Fenêtre des jeux Game Pass gratuits */
+.dialog { width: min(760px, calc(100vw - 48px)); max-height: calc(100vh - 64px); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; background: var(--surface); color: var(--fg); display: flex; flex-direction: column; gap: 12px; }
+.dialog:not([open]) { display: none; }
+.dialog::backdrop { background: rgba(0, 0, 0, .45); }
+.dialog-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.dialog-head h2 { margin: 0 0 4px; }
+.dialog .filters { display: flex; gap: 8px; }
+.icon-btn { border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; flex: none; }
+.free-games { list-style: none; margin: 0; padding: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.free-games li { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 6px; border-radius: 10px; }
+.free-games li.played { background: var(--accent-soft); }
+.free-games img, .free-games .img { width: 54px; height: 72px; object-fit: cover; border-radius: 6px; background: var(--line); }
+.free-game-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.free-game-text .tag { align-self: flex-start; }
+.free-game-actions { display: flex; gap: 6px; }

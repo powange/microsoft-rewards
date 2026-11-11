@@ -1348,6 +1348,73 @@ $("test-reminder").addEventListener("click", async () => {
   $("test-reminder-result").textContent = lines.length ? "Notification envoyée." : "Rien à faire aujourd'hui, aucune notification envoyée.";
 });
 
+// ---------- Jeux Game Pass gratuits ----------
+
+const freeGames = { data: null, platform: "all", loading: false };
+
+/** « Sea of Thieves » et « Sea of Thieves: 2026 Edition » : même jeu pour la liste du mois. */
+const playedThisMonth = (title) => {
+  const t = normalize(title);
+  return (state.xbox?.monthGames ?? []).some((g) => {
+    const n = normalize(g);
+    return n && (n === t || n.startsWith(t) || t.startsWith(n));
+  });
+};
+
+function renderFreeGames() {
+  const list = $("free-games-list");
+  const data = freeGames.data;
+  for (const b of document.querySelectorAll("#free-games-dialog [data-platform]")) {
+    b.setAttribute("aria-pressed", b.dataset.platform === freeGames.platform ? "true" : "false");
+  }
+  if (!data) {
+    list.replaceChildren(h("li", { class: "empty muted" }, freeGames.loading
+      ? "Lecture du catalogue Game Pass sur le Store Microsoft (une vingtaine de secondes la première fois)…"
+      : "Catalogue indisponible pour le moment."));
+    return;
+  }
+  const games = data.games.filter((g) => freeGames.platform === "all" || g.platforms.includes(freeGames.platform));
+  const packs = hasGamePassQuests();
+  list.replaceChildren(...games.map((g) => {
+    const played = playedThisMonth(g.title);
+    return h("li", { class: played ? "played" : "" },
+      g.imageUrl ? h("img", { src: g.imageUrl, alt: "", loading: "lazy" }) : h("span", { class: "img" }),
+      h("div", { class: "free-game-text" },
+        h("b", {}, g.title),
+        h("span", { class: "muted small" }, g.platforms.join(" · ")),
+        played ? h("span", { class: "tag" }, "Joué ce mois-ci ✓") : null),
+      h("div", { class: "free-game-actions" },
+        packs && !played ? h("button", { class: "btn small", type: "button", title: "Ajouter aux jeux du mois des packs Game Pass",
+          onclick: async () => { renderXbox(await invoke("set_month_game", { game: g.title, add: true })); renderFreeGames(); } }, "Ajouter au mois") : null,
+        h("button", { class: "btn small ghost", type: "button", onclick: () => openUrl(g.url) }, "Store ↗")));
+  }));
+  $("free-games-note").textContent = `${games.length} jeu${games.length > 1 ? "x" : ""} sur ${data.checked} jeux du catalogue Game Pass (France). Prix illisible pour ${data.unknown} jeux : la liste peut en oublier quelques-uns.`;
+}
+
+async function openFreeGames() {
+  $("free-games-dialog").showModal();
+  if (freeGames.data) {
+    renderFreeGames();
+    return;
+  }
+  freeGames.loading = true;
+  renderFreeGames();
+  try {
+    freeGames.data = await invoke("free_game_pass_games", { force: false });
+  } catch (err) {
+    toast(String(err));
+  } finally {
+    freeGames.loading = false;
+    renderFreeGames();
+  }
+}
+
+$("free-games-btn").addEventListener("click", openFreeGames);
+$("free-games-close").addEventListener("click", () => $("free-games-dialog").close());
+for (const b of document.querySelectorAll("#free-games-dialog [data-platform]")) {
+  b.addEventListener("click", () => { freeGames.platform = b.dataset.platform; renderFreeGames(); });
+}
+
 // ---------- Formule Game Pass (N4) ----------
 
 const checkedFormat = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long" });

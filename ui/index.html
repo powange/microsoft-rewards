@@ -98,7 +98,10 @@
           <article class="panel wide" id="xbox-panel">
             <div class="panel-head">
               <h2>Quêtes Xbox</h2>
-              <button class="btn" id="open-xbox">Ouvrir l'app Xbox</button>
+              <span class="btnrow">
+                <button class="btn" id="free-games-btn" type="button">Jeux Game Pass gratuits</button>
+                <button class="btn" id="open-xbox">Ouvrir l'app Xbox</button>
+              </span>
             </div>
             <div id="xbox-live" class="xbox-live"></div>
             <div id="xbox-manual">
@@ -305,6 +308,23 @@
       </section>
     </main>
   </div>
+  <dialog id="free-games-dialog" class="dialog" aria-labelledby="free-games-title">
+    <div class="dialog-head">
+      <div>
+        <h2 id="free-games-title">Jeux Game Pass gratuits</h2>
+        <p class="muted small">Inclus dans le Game Pass et gratuits sans abonnement : ils comptent pour les packs mensuels de jeux Game Pass sans rien acheter.</p>
+      </div>
+      <button class="icon-btn" id="free-games-close" type="button" aria-label="Fermer">✕</button>
+    </div>
+    <div class="filters" role="group" aria-label="Plateforme">
+      <button type="button" class="chip" data-platform="all" aria-pressed="true">Tous</button>
+      <button type="button" class="chip" data-platform="PC" aria-pressed="false">PC</button>
+      <button type="button" class="chip" data-platform="Console" aria-pressed="false">Console</button>
+    </div>
+    <ul class="free-games" id="free-games-list"></ul>
+    <p class="muted small" id="free-games-note"></p>
+  </dialog>
+
   <div id="toast" class="toast" role="status" hidden></div>
   <script src="app.js"></script>
 </body>
