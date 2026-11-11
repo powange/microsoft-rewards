@@ -3,6 +3,7 @@
 //! L'app ne voit jamais le mot de passe : elle lit seulement les cookies de session une fois
 //! la connexion terminée. Cette fenêtre n'a accès à aucune commande de l'application.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -130,19 +131,110 @@ const CLICK_SCRIPT: &str = r#"(() => {
   tick();
 })();"#;
 
+/// Texte à chercher pour une tâche « recherchez sur Bing … », mis dans le champ de recherche
+/// de Bing quand la page s'ouvre. Il n'est jamais envoyé : l'utilisateur valide lui-même.
+static PENDING_QUERY: Mutex<Option<String>> = Mutex::new(None);
+
+/// Préfixe des fenêtres de recherche ouvertes par le site Rewards.
+const SEARCH_LABEL: &str = "bing-search";
+static SEARCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// Script injecté dans une page Bing : si le champ de recherche est vide, y met `query`,
+/// lui donne le focus et sélectionne le texte, sans lancer la recherche.
+const FILL_SCRIPT: &str = r##"(() => {
+  const query = __QUERY__;
+  const started = Date.now();
+  const tick = () => {
+    const box = document.querySelector("#sb_form_q, textarea[name=q], input[name=q]");
+    if (box) {
+      if (!box.value.trim()) {
+        const proto = box instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        Object.getOwnPropertyDescriptor(proto, "value").set.call(box, query);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      box.focus();
+      box.select();
+      return;
+    }
+    if (Date.now() - started < 15000) setTimeout(tick, 300);
+  };
+  tick();
+})();"##;
+
+/// Remplit le champ de recherche si la page chargée est Bing et qu'un texte est en attente.
+fn fill_pending_query<R: Runtime>(window: &tauri::WebviewWindow<R>, url: &Url) {
+    let host = url.host_str().unwrap_or_default();
+    let is_bing = host == "bing.com" || host == "www.bing.com";
+    if !is_bing {
+        return;
+    }
+    if let Some(query) = PENDING_QUERY.lock().unwrap().take() {
+        let query = serde_json::to_string(&query).unwrap_or_default();
+        let _ = window.eval(FILL_SCRIPT.replace("__QUERY__", &query));
+    }
+}
+
+/// Fenêtre de recherche demandée par le site (recherche Bing, quiz…). L'application la crée
+/// elle-même, dans la même session WebView2, pour pouvoir y remplir le champ de recherche.
+/// Une seule à la fois : la précédente est fermée, pour ne pas les accumuler.
+fn open_search_window<R: Runtime>(
+    app: &AppHandle<R>,
+    features: tauri::webview::NewWindowFeatures,
+) -> tauri::Result<tauri::WebviewWindow<R>> {
+    for (label, window) in app.webview_windows() {
+        if label.starts_with(SEARCH_LABEL) {
+            let _ = window.close();
+        }
+    }
+    let label = format!(
+        "{SEARCH_LABEL}-{}",
+        SEARCH_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let handle = app.clone();
+    WebviewWindowBuilder::new(
+        app,
+        label,
+        WebviewUrl::External(Url::parse("about:blank").unwrap()),
+    )
+    .title("Recherche Bing")
+    .inner_size(1100.0, 820.0)
+    .window_features(features)
+    .on_document_title_changed(|window, title| {
+        let _ = window.set_title(&title);
+    })
+    .on_new_window(|url, _| {
+        if url.scheme() == "https" {
+            NewWindowResponse::Allow
+        } else {
+            NewWindowResponse::Deny
+        }
+    })
+    .on_page_load(move |window, payload| {
+        if payload.event() != PageLoadEvent::Finished {
+            return;
+        }
+        let _ = handle.emit("rewards-site-navigated", payload.url().as_str());
+        fill_pending_query(&window, payload.url());
+    })
+    .build()
+}
+
 /// Ouvre une page du site Rewards dans une fenêtre de l'application, connectée au compte.
 ///
 /// C'est le site qui valide une activité au moment du clic (le lien de destination seul ne
 /// rapporte rien, il porte souvent `rnoreward=1`). Avec `click`, l'application clique
 /// elle-même sur la tâche qui a ce lien une fois la page chargée ; sinon l'utilisateur clique
-/// dans la fenêtre. Chaque page chargée et la fermeture de la fenêtre sont signalées à
+/// dans la fenêtre. Avec `query`, le champ de recherche de la page Bing ouverte ensuite est
+/// prérempli. Chaque page chargée et la fermeture de la fenêtre sont signalées à
 /// l'interface, qui actualise les données.
 pub fn open_site<R: Runtime>(
     app: &AppHandle<R>,
     url: Url,
     click: Option<String>,
+    query: Option<String>,
 ) -> tauri::Result<()> {
     *PENDING_CLICK.lock().unwrap() = click;
+    *PENDING_QUERY.lock().unwrap() = query.filter(|q| !q.trim().is_empty());
     if let Some(window) = app.get_webview_window(SITE_LABEL) {
         window.navigate(url)?;
         window.unminimize()?;
@@ -156,15 +248,20 @@ pub fn open_site<R: Runtime>(
         .center()
         // Le site ouvre la recherche Bing, le quiz… dans une nouvelle fenêtre après avoir
         // validé le clic. Sans ce gestionnaire, WebView2 bloque ces fenêtres en silence.
-        // La fenêtre ouverte partage la session : la recherche est faite avec le compte connecté.
         .on_new_window({
             let handle = app.clone();
-            move |url, _| {
+            move |url, features| {
                 if url.scheme() != "https" {
                     return NewWindowResponse::Deny;
                 }
                 let _ = handle.emit("rewards-site-navigated", url.as_str());
-                NewWindowResponse::Allow
+                match open_search_window(&handle, features) {
+                    Ok(window) => NewWindowResponse::Create { window },
+                    Err(err) => {
+                        log::warn!("Fenêtre de recherche impossible à créer : {err}");
+                        NewWindowResponse::Allow
+                    }
+                }
             }
         })
         .on_page_load(move |window, payload| {
@@ -178,6 +275,8 @@ pub fn open_site<R: Runtime>(
                     let _ = window.eval(CLICK_SCRIPT.replace("__TARGET__", &target));
                 }
             }
+            // Certains liens s'ouvrent dans la même fenêtre plutôt que dans une nouvelle.
+            fill_pending_query(&window, payload.url());
         })
         .build()?;
     let handle = app.clone();

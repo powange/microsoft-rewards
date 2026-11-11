@@ -57,6 +57,9 @@ pub struct Activity {
     pub xbox: bool,
     /// Nature de la tâche (recherche Bing, quiz…), déduite de son lien et de son texte.
     pub kind: Option<TaskKind>,
+    /// Ce qu'il faut chercher pour une recherche à faire soi-même (« les paroles de votre
+    /// chanson préférée »), pour préremplir le champ de recherche de Bing.
+    pub search_query: Option<String>,
 }
 
 /// Ce que demande une tâche, pour la signaler dans l'interface.
@@ -113,6 +116,7 @@ pub struct Step {
     pub link_text: Option<String>,
     pub url: Option<String>,
     pub kind: Option<TaskKind>,
+    pub search_query: Option<String>,
 }
 
 /// Contenu de la page d'une quête.
@@ -174,11 +178,17 @@ impl RewardsSummary {
     fn classify_tasks(&mut self) {
         for a in self.daily_set.iter_mut().chain(self.more.iter_mut()) {
             a.kind = task_kind(a.url.as_deref(), &[&a.title, &a.description]);
+            a.search_query = (a.kind == Some(TaskKind::SearchManual))
+                .then(|| search_query(&[&a.description, &a.title]))
+                .flatten();
         }
         for card in &mut self.punch_cards {
             for s in &mut card.steps {
                 let link = s.link_text.as_deref().unwrap_or_default();
                 s.kind = task_kind(s.url.as_deref(), &[&s.title, &s.description, link]);
+                s.search_query = (s.kind == Some(TaskKind::SearchManual))
+                    .then(|| search_query(&[&s.description, &s.title]))
+                    .flatten();
             }
         }
     }
@@ -565,6 +575,7 @@ fn activity_with(object: &Map<String, Value>, allow_zero: bool) -> Option<Activi
             .map(str::to_string),
         note: None,
         kind: None,
+        search_query: None,
         id,
         title,
         description,
@@ -627,6 +638,7 @@ fn card_activity(object: &Map<String, Value>, text: &str) -> Option<Activity> {
         image_url,
         note,
         kind: None,
+        search_query: None,
         id,
         title,
         description,
@@ -973,6 +985,7 @@ fn quest_step(icon: &Value, content: &Value, text: &str) -> Option<Step> {
             .map(str::to_string),
         url,
         kind: None,
+        search_query: None,
     })
 }
 
@@ -1107,6 +1120,47 @@ fn task_kind(url: Option<&str>, texts: &[&str]) -> Option<TaskKind> {
             (!ours && !host.is_empty()).then_some(TaskKind::Partner)
         }
     }
+}
+
+/// Ce que demande de chercher une consigne « Recherchez sur Bing … » :
+/// « Recherchez sur Bing pour trouver des billets pour des concerts près de chez vous »
+/// → « billets pour des concerts près de chez vous ».
+fn search_query(texts: &[&str]) -> Option<String> {
+    const PREFIXES: [&str; 6] = [
+        "recherchez sur bing",
+        "recherchez avec bing",
+        "rechercher sur bing",
+        "rechercher avec bing",
+        "search on bing",
+        "search bing",
+    ];
+    const LEADING: [&str; 14] = [
+        "pour ", "trouver ", "for ", "to find ", "les ", "des ", "le ", "la ", "l'", "l’", "un ",
+        "une ", "du ", "de ",
+    ];
+    texts.iter().find_map(|text| {
+        let lower = text.to_lowercase();
+        let (at, prefix) = PREFIXES
+            .iter()
+            .find_map(|p| lower.find(p).map(|at| (at, *p)))?;
+        // Les indices de `lower` valent pour `text` tant que la casse ne change pas la longueur.
+        let mut rest = text
+            .get(at + prefix.len()..)?
+            .trim_start_matches([' ', ',', ':']);
+        loop {
+            let lower_rest = rest.to_lowercase();
+            match LEADING.iter().find(|w| lower_rest.starts_with(*w)) {
+                Some(word) => rest = rest.get(word.len()..)?.trim_start(),
+                None => break,
+            }
+        }
+        let query = rest
+            .split(['.', '!', '?'])
+            .next()
+            .unwrap_or_default()
+            .trim();
+        (query.chars().count() >= 3 && query.chars().count() <= 120).then(|| query.to_string())
+    })
 }
 
 fn as_int(value: &Value) -> Option<i64> {
@@ -1359,5 +1413,50 @@ c:{{"UnlockCriteria":{{"newLevel2":"Niveau Argent requis","tomorrow":"Déverroui
             Some(TaskKind::SearchManual)
         );
         assert_eq!(task_kind(None, &["Parrainez vos amis"]), None);
+    }
+
+    #[test]
+    fn deduit_le_texte_a_chercher() {
+        let q = |t: &str| search_query(&[t]);
+        assert_eq!(
+            q("Recherchez sur Bing les paroles de votre chanson préférée").as_deref(),
+            Some("paroles de votre chanson préférée")
+        );
+        assert_eq!(
+            q("Recherchez sur Bing pour trouver des billets pour des concerts près de chez vous")
+                .as_deref(),
+            Some("billets pour des concerts près de chez vous")
+        );
+        assert_eq!(
+            q("Recherchez sur Bing pour réserver des vols abordables pour votre prochain voyage")
+                .as_deref(),
+            Some("réserver des vols abordables pour votre prochain voyage")
+        );
+        assert_eq!(
+            q("Recherchez sur Bing pour comparer les options de comptes chèques et d'épargne")
+                .as_deref(),
+            Some("comparer les options de comptes chèques et d'épargne")
+        );
+        for (consigne, attendu) in [
+            (
+                "Recherchez sur Bing pour réserver des voitures de location pour votre prochaine aventure",
+                "réserver des voitures de location pour votre prochaine aventure",
+            ),
+            (
+                "Recherchez sur Bing pour réserver un parking à l'aéroport aux meilleurs tarifs",
+                "réserver un parking à l'aéroport aux meilleurs tarifs",
+            ),
+            (
+                "Recherchez sur Bing des options de livraison rapide et fraîche de fleurs",
+                "options de livraison rapide et fraîche de fleurs",
+            ),
+            (
+                "Recherchez sur Bing pour trouver les meilleures plateformes de streaming et les meilleurs forfaits",
+                "meilleures plateformes de streaming et les meilleurs forfaits",
+            ),
+        ] {
+            assert_eq!(q(consigne).as_deref(), Some(attendu));
+        }
+        assert_eq!(q("Activez la barre de recherche"), None);
     }
 }
