@@ -49,6 +49,31 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Marqueur laissé avant une mise à jour automatique faite fenêtre fermée : au redémarrage
+/// qui suit, l'application reste dans la zone de notification.
+const RESTART_MINIMIZED_FILE: &str = "restart-minimized";
+
+pub fn set_restart_minimized<R: Runtime>(app: &AppHandle<R>, minimized: bool) {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let path = dir.join(RESTART_MINIMIZED_FILE);
+    if minimized {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(path, "");
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Lit et efface le marqueur de redémarrage dans la zone de notification.
+fn take_restart_minimized<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.path()
+        .app_data_dir()
+        .map(|dir| std::fs::remove_file(dir.join(RESTART_MINIMIZED_FILE)).is_ok())
+        .unwrap_or(false)
+}
+
 pub fn notify<R: Runtime>(app: &AppHandle<R>, title: &str, body: &str) {
     if let Err(err) = app.notification().builder().title(title).body(body).show() {
         log::warn!("Notification impossible : {err}");
@@ -344,7 +369,8 @@ pub fn run() {
                 xbox: xbox::XboxState::default(),
             });
             tray::create(app.handle())?;
-            if !std::env::args().any(|arg| arg == MINIMIZED_ARG) {
+            let restarted_minimized = take_restart_minimized(app.handle());
+            if !restarted_minimized && !std::env::args().any(|arg| arg == MINIMIZED_ARG) {
                 show_main(app.handle());
             }
             reminders::spawn(app.handle().clone());

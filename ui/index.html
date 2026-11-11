@@ -250,9 +250,9 @@
             <label for="update-interval">Rechercher toutes les</label>
             <div class="inline-field"><input type="number" id="update-interval" min="1" max="10080" step="1"> minutes</div>
             <span></span>
-            <label class="check"><input type="checkbox" id="auto-install"> Installer automatiquement les mises à jour, puis redémarrer (dès que la fenêtre est fermée, pour ne pas vous interrompre)</label>
+            <label class="check"><input type="checkbox" id="auto-install"> Installer automatiquement les mises à jour, puis redémarrer</label>
           </div>
-          <p class="muted small">L'installation automatique n'a lieu que lorsque la fenêtre est fermée (application dans la zone de notification), pour ne pas vous interrompre. Si la fenêtre est ouverte, une bannière propose la mise à jour.</p>
+          <p class="muted small">Une mise à jour trouvée lors de la recherche automatique est installée aussitôt, puis l'application redémarre, même si la fenêtre est ouverte. Si la fenêtre était fermée, l'application redémarre dans la zone de notification.</p>
           <div id="update-box" class="update-box" hidden>
             <b id="update-title"></b>
             <p id="update-notes" class="muted small"></p>

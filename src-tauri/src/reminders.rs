@@ -15,8 +15,6 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>) {
         let _ = crate::refresh(&app).await;
         refresh_xbox(&app).await;
         let mut last_update_check: Option<Instant> = None;
-        // Mise à jour trouvée, à installer dès que la fenêtre est fermée.
-        let mut update_pending = false;
         let mut ticker = tokio::time::interval(Duration::from_secs(60));
         loop {
             ticker.tick().await;
@@ -25,12 +23,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>) {
                 && last_update_check.is_none_or(|t| t.elapsed() >= settings.update_check_interval())
             {
                 last_update_check = Some(Instant::now());
-                update_pending =
-                    crate::updater::background_check(&app, settings.auto_install_updates).await;
-            }
-            // Vérifié chaque minute : l'installation se fait peu après la fermeture de la fenêtre.
-            if update_pending && settings.auto_install_updates {
-                update_pending = crate::updater::auto_install_when_idle(&app).await;
+                crate::updater::background_check(&app, settings.auto_install_updates).await;
             }
             if let Some(interval) = settings.refresh_interval() {
                 let last = *app.state::<AppState>().last_refresh.lock().unwrap();

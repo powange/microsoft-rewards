@@ -42,7 +42,7 @@ pub struct Settings {
     pub auto_check_updates: bool,
     /// Délai entre deux recherches de mise à jour, en minutes.
     pub update_check_interval_minutes: u32,
-    /// Installer seul une mise à jour trouvée, quand la fenêtre est fermée.
+    /// Installer seule une mise à jour dès qu'elle est trouvée, puis redémarrer.
     pub auto_install_updates: bool,
     /// Actualisation automatique des points, séries et quêtes, en minutes (0 = désactivée).
     pub refresh_interval_minutes: u32,
