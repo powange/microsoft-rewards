@@ -554,55 +554,127 @@ listen("rewards-logged-out", () => setLoggedIn(false));
 
 // ---------- Quêtes Xbox ----------
 
-const PACK_TIERS = ["premium", "ultimate"];
 
-function dots(container, filled, total) {
-  container.replaceChildren(...Array.from({ length: total }, (_, i) => h("i", { class: i < filled ? "f" : "" })));
+
+// Barèmes du Rewards Hub de l'app Xbox (novembre 2026), par formule :
+// [Tout le monde, Essential, Premium, Ultimate].
+const XBOX_TIER = { none: 0, essential: 1, premium: 2, pcGamePass: 2, ultimate: 3 };
+const XBOX_DAILY = [
+  { act: "pc", device: "xboxPc", title: "Jouer à un jeu PC", desc: "15 minutes sur PC", pts: [5, 10, 10, 20] },
+  { act: "jewel", device: "xboxMobile", title: "Jouer à Jewel", desc: "Un niveau dans l'application mobile Xbox", pts: [5, 5, 5, 10] },
+  { act: "console", device: "xboxConsole", title: "Jouer sur la console", desc: "15 minutes sur console", pts: [5, 10, 10, 20] },
+  { act: "gamePass", gamePass: true, title: "Jouer à un jeu Game Pass", desc: "15 minutes, Premium et Ultimate", pts: [0, 0, 10, 20] },
+];
+const XBOX_WEEKLY_BONUS = [110, 110, 130, 260];
+const XBOX_MOBILE_DAYS = [2, 6, 10, 14, 18];
+
+function xboxTier() {
+  return XBOX_TIER[state.settings?.subscription] ?? 0;
+}
+
+const hasGamePassQuests = () => xboxTier() >= 2;
+
+async function setXboxActivity(date, activity, done) {
+  renderXbox(await invoke("set_xbox_activity", { date, activity, done }));
+}
+
+/** Sept pastilles du lundi au dimanche, cochables pour une activité donnée. */
+function weekChips(progress, act, label) {
+  const dayName = new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+  return h("div", { class: "week-days", role: "group", "aria-label": label },
+    progress.week.map((d) => {
+      const name = dayName.format(dayDate(d.date));
+      const done = d.play[act];
+      return h("button", {
+        class: "day", type: "button", "aria-pressed": done ? "true" : "false", disabled: d.future,
+        title: d.future ? `${name} : à venir` : `${name} : ${done ? "fait (cliquer pour retirer)" : "pas fait (cliquer pour cocher)"}`,
+        onclick: () => setXboxActivity(d.date, act, !done),
+      }, name.charAt(0).toUpperCase());
+    }));
+}
+
+function seriesCard(title, desc, status, chips, extra) {
+  return h("div", { class: "xq-card" },
+    h("div", { class: "xq-head" }, h("b", {}, title), h("span", { class: "xq-status" }, status)),
+    h("div", { class: "muted small" }, desc),
+    chips, extra ?? null);
 }
 
 function renderXbox(progress) {
   state.xbox = progress;
-  const today = $("xbox-today-state");
-  if (progress.todayDone) {
-    today.replaceChildren(h("span", { class: "ok" }, "Jeu quotidien fait"),
-      progress.todayGame ? ` · ${progress.todayGame}` : "");
-  } else {
-    today.replaceChildren(h("b", {}, "Jeu quotidien à faire"),
-      h("div", { class: "muted small" }, "Jouez au moins 15 minutes à un jeu du catalogue Game Pass, lancé depuis l'app Xbox (pas Steam ni un lanceur tiers)."));
-  }
-  $("xbox-form").hidden = progress.todayDone;
-  $("xbox-undo").hidden = !progress.todayDone;
+  const settings = state.settings ?? {};
+  const tier = xboxTier();
+  const today = progress.week.find((d) => !d.future && d.date === isoDay(new Date()))?.date ?? isoDay(new Date());
+  const shown = (q) => (q.gamePass ? hasGamePassQuests() : settings[q.device] !== false);
 
-  $("week-count").textContent = `${progress.weekDays} / ${progress.weekTarget} jours`;
-  const dayName = new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long" });
-  $("week-days").replaceChildren(...progress.week.map((d) => {
-    const date = dayDate(d.date);
-    const label = dayName.format(date);
+  // Quêtes du jour
+  $("xq-daily").replaceChildren(...XBOX_DAILY.filter(shown).map((q) => {
+    const done = progress.today[q.act];
     return h("button", {
-      class: "day", type: "button", "aria-pressed": d.played ? "true" : "false", disabled: d.future,
-      title: d.future ? `${label} : à venir` : `${label} : ${d.played ? "joué (cliquer pour retirer)" : "pas joué (cliquer pour cocher)"}`,
-      onclick: async () => renderXbox(await invoke("set_xbox_day", { date: d.date, played: !d.played })),
-    }, label.charAt(0).toUpperCase());
+      class: `xq-daily-card${done ? " done" : ""}`, type: "button", "aria-pressed": done ? "true" : "false",
+      title: done ? "Fait aujourd'hui (cliquer pour retirer)" : "Cliquer quand c'est fait",
+      onclick: () => setXboxActivity(today, q.act, !done),
+    },
+      h("span", { class: "state" + (done ? " done" : "") }),
+      h("span", { class: "xq-text" }, h("b", {}, q.title), h("span", { class: "muted small" }, q.desc)),
+      h("span", { class: "pts" }, `+${q.pts[tier]}`));
   }));
 
-  const games = progress.monthGames.length;
-  const packs = PACK_TIERS.includes(state.settings?.subscription);
-  $("month-goal").hidden = !packs;
-  $("month-count").textContent = `${games} jeu${games > 1 ? "x" : ""} différent${games > 1 ? "s" : ""} · pack 4 ${games >= 4 ? "✓" : `${games}/4`} · pack 8 ${games >= 8 ? "✓" : `${games}/8`}`;
-  dots($("month-dots"), games, 8);
-  $("month-games").textContent = progress.monthGames.join(", ");
+  // Séries de la semaine
+  const weekly = [];
+  if (settings.xboxPc !== false) {
+    weekly.push(seriesCard("Bonus hebdomadaire sur PC", "Jouez 5 jours cette semaine sur PC pendant 15 minutes.",
+      `${Math.min(progress.pcDays, 5)}/5 · +${XBOX_WEEKLY_BONUS[tier]}`, weekChips(progress, "pc", "Jours joués sur PC")));
+  }
+  if (settings.xboxConsole) {
+    weekly.push(seriesCard("Bonus console hebdomadaire", "Jouez 5 jours cette semaine sur console.",
+      `${Math.min(progress.consoleDays, 5)}/5 · +${XBOX_WEEKLY_BONUS[tier]}`, weekChips(progress, "console", "Jours joués sur console")));
+  }
+  if (settings.xboxMobile !== false) {
+    const streak = progress.mobileStreak;
+    const next = XBOX_MOBILE_DAYS[Math.min(streak, 4)];
+    const status = progress.today.mobileApp
+      ? `Jour ${Math.min(streak, 5)} fait`
+      : `Jour ${Math.min(streak + 1, 5)} à faire · +${next}`;
+    weekly.push(seriesCard("Application mobile Xbox", `Connectez-vous chaque jour à l'application mobile : +${XBOX_MOBILE_DAYS.join(", +")} (barème de base, plus selon la formule).`,
+      status, weekChips(progress, "mobileApp", "Jours de connexion à l'application mobile")));
+  }
+  if (hasGamePassQuests()) {
+    const mult = tier === 3 ? 2 : 1;
+    weekly.push(seriesCard("Série hebdomadaire Game Pass", `Jouez à un jeu Game Pass au moins 5 jours : 5 j +${40 * mult} et semaine suivante ×2, 6 j +${10 * mult}, 7 j +${20 * mult}.`,
+      `${progress.gamePassDays}/7`, weekChips(progress, "gamePass", "Jours joués à un jeu Game Pass")));
+  }
+  $("xq-weekly").replaceChildren(...weekly);
+
+  // Packs du mois
+  $("xq-monthly-wrap").hidden = !hasGamePassQuests();
+  const ultimate = tier === 3;
+  const count = progress.monthCount;
+  const pack = (n, pts) => h("span", { class: `xq-pack${count >= n ? " done" : ""}` }, `Pack ${n} jeux : ${Math.min(count, n)}/${n} · +${pts}`);
+  const addInput = h("input", { id: "month-game-input", list: "known-games", placeholder: "Ajouter un jeu joué ce mois-ci", autocomplete: "off" });
+  const addGame = async () => {
+    const game = addInput.value.trim();
+    if (!game) return;
+    renderXbox(await invoke("set_month_game", { game, add: true }));
+  };
+  addInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addGame(); } });
+  const setExtra = async (n) => renderXbox(await invoke("set_month_extra", { extra: Math.max(0, n) }));
+  $("xq-monthly").replaceChildren(h("div", { class: "xq-card" },
+    h("div", { class: "xq-head" }, h("b", {}, "Jeux Game Pass joués ce mois-ci"), h("span", { class: "xq-status" }, `${count} jeu${count > 1 ? "x" : ""}`)),
+    h("div", { class: "xq-packs" }, pack(4, ultimate ? 80 : 40), pack(8, ultimate ? 560 : 280)),
+    h("div", { class: "chips" }, progress.monthGames.map((g) =>
+      h("span", { class: "chip" }, g, h("button", { class: "chip-x", type: "button", "aria-label": `Retirer ${g}`, title: "Retirer de ce mois-ci", onclick: async () => renderXbox(await invoke("set_month_game", { game: g, add: false })) }, "×")))),
+    h("div", { class: "inline" }, addInput, h("button", { class: "btn small", type: "button", onclick: addGame }, "Ajouter")),
+    h("div", { class: "xq-extra" },
+      h("span", { class: "muted small" }, "Jeux joués sans les nommer :"),
+      h("button", { class: "btn small", type: "button", "aria-label": "Un de moins", disabled: progress.monthExtra <= 0, onclick: () => setExtra(progress.monthExtra - 1) }, "−"),
+      h("b", {}, String(progress.monthExtra)),
+      h("button", { class: "btn small", type: "button", "aria-label": "Un de plus", onclick: () => setExtra(progress.monthExtra + 1) }, "+"))));
 
   $("known-games").replaceChildren(...progress.knownGames.map((g) => h("option", { value: g })));
   renderGames();
 }
 
-$("xbox-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const game = $("xbox-game").value.trim();
-  renderXbox(await invoke("set_xbox_today", { game }));
-  $("xbox-game").value = "";
-});
-$("xbox-undo").addEventListener("click", async () => renderXbox(await invoke("set_xbox_today", { game: null })));
 $("open-xbox").addEventListener("click", () => invoke("open_xbox_app").catch((err) => toast(String(err))));
 
 // ---------- Quêtes Xbox réelles (connexion Xbox Live, expérimental) ----------
@@ -1180,6 +1252,11 @@ async function saveSettings(control) {
     notifyLevel: $("notify-level").checked,
     weeklySummary: $("weekly-summary").checked,
     autoXboxDays: $("auto-xbox-days").checked,
+    xboxPc: $("xbox-pc").checked,
+    xboxConsole: $("xbox-console").checked,
+    xboxMobile: $("xbox-mobile").checked,
+    // Seuls le mois et le jour sont gardés.
+    birthday: $("birthday").value ? $("birthday").value.slice(5) : "",
     streakReminderTime: $("streak-reminder-time").value || "22:00",
     subscription: $("subscription").value,
     autoCheckUpdates: $("auto-update").checked,
@@ -1210,6 +1287,10 @@ function renderSettings(settings) {
   $("notify-level").checked = settings.notifyLevel;
   $("weekly-summary").checked = settings.weeklySummary;
   $("auto-xbox-days").checked = settings.autoXboxDays;
+  $("xbox-pc").checked = settings.xboxPc;
+  $("xbox-console").checked = settings.xboxConsole;
+  $("xbox-mobile").checked = settings.xboxMobile;
+  $("birthday").value = settings.birthday ? `2000-${settings.birthday}` : "";
   $("streak-reminder-time").value = settings.streakReminderTime;
   $("subscription").value = settings.subscription;
   $("auto-update").checked = settings.autoCheckUpdates;
@@ -1247,7 +1328,7 @@ function refreshMinutesInput() {
   return minutes;
 }
 
-for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "remind-streaks-evening", "streak-reminder-time", "notify-level", "weekly-summary", "auto-xbox-days", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval"]) {
+for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "remind-streaks-evening", "streak-reminder-time", "notify-level", "weekly-summary", "auto-xbox-days", "xbox-pc", "xbox-console", "xbox-mobile", "birthday", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval"]) {
   $(id).addEventListener("change", () => saveSettings($(id)));
 }
 

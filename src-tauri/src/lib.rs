@@ -618,27 +618,33 @@ fn xbox_progress(state: State<AppState>) -> XboxProgress {
     state.store.xbox_progress()
 }
 
+/// Coche ou décoche une quête Xbox pour un jour de la semaine en cours.
 #[tauri::command]
-fn set_xbox_today(state: State<AppState>, game: Option<String>) -> XboxProgress {
-    state.store.set_xbox_today(game);
+fn set_xbox_activity(
+    state: State<AppState>,
+    date: chrono::NaiveDate,
+    activity: store::XboxActivity,
+    done: bool,
+) -> XboxProgress {
+    state.store.set_xbox_activity(date, activity, done);
     state.store.xbox_progress()
 }
 
-/// Coche ou décoche un jour de la semaine en cours dans le suivi Xbox manuel.
+/// Ajoute (`add`) ou retire un jeu de la liste du mois (packs de 4 et 8 jeux Game Pass).
 #[tauri::command]
-fn set_xbox_day(state: State<AppState>, date: chrono::NaiveDate, played: bool) -> XboxProgress {
-    // Un jour coché après coup garde le jeu déjà noté, sinon reste sans nom de jeu.
-    let game = played.then(String::new);
-    if !(played
-        && state
-            .store
-            .xbox_progress()
-            .week
-            .iter()
-            .any(|d| d.date == date && d.played))
-    {
-        state.store.set_xbox_day(date, game);
+fn set_month_game(state: State<AppState>, game: String, add: bool) -> XboxProgress {
+    if add {
+        state.store.add_month_game(&game);
+    } else {
+        state.store.remove_month_game(&game);
     }
+    state.store.xbox_progress()
+}
+
+/// Nombre de jeux joués ce mois-ci sans être nommés.
+#[tauri::command]
+fn set_month_extra(state: State<AppState>, extra: u32) -> XboxProgress {
+    state.store.set_month_extra(extra);
     state.store.xbox_progress()
 }
 
@@ -860,8 +866,9 @@ pub fn run() {
             get_settings,
             save_settings,
             xbox_progress,
-            set_xbox_today,
-            set_xbox_day,
+            set_xbox_activity,
+            set_month_game,
+            set_month_extra,
             followed_quests,
             follow_quest,
             xbox_status,

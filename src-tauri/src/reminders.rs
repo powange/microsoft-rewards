@@ -45,6 +45,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>) {
             maybe_remind_streaks(&app, &settings).await;
             maybe_level_alert(&app, &settings);
             maybe_weekly_summary(&app, &settings);
+            maybe_birthday_reminder(&app, &settings);
         }
     });
 }
@@ -336,18 +337,89 @@ async fn todo_lines<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> (Vec
         };
         match live {
             Some(rewards) => lines.extend(xbox_lines(&rewards)),
-            None => {
-                let xbox = app.state::<AppState>().store.xbox_progress();
-                if !xbox.today_done {
-                    lines.push(format!(
-                        "Xbox : jouer 15 min à un jeu Game Pass ({}/{} jours cette semaine)",
-                        xbox.week_days, xbox.week_target
-                    ));
-                }
-            }
+            None => lines.extend(xbox_manual_lines(app, settings)),
         }
     }
     (lines, complete)
+}
+
+/// Quêtes Xbox du jour pas encore faites, d'après le suivi (appareils et formule choisis).
+fn xbox_manual_lines<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Vec<String> {
+    let xbox = app.state::<AppState>().store.xbox_progress();
+    let game_pass = matches!(
+        settings.subscription,
+        crate::store::Subscription::Premium | crate::store::Subscription::Ultimate
+    );
+    let mut lines = Vec::new();
+    if settings.xbox_pc && !xbox.today.pc {
+        lines.push(format!(
+            "Xbox : jouer 15 min sur PC (bonus hebdomadaire {}/5 jours)",
+            xbox.pc_days
+        ));
+    }
+    if settings.xbox_console && !xbox.today.console {
+        lines.push(format!(
+            "Xbox : jouer 15 min sur console (bonus hebdomadaire {}/5 jours)",
+            xbox.console_days
+        ));
+    }
+    if settings.xbox_mobile && !xbox.today.mobile_app {
+        lines.push(format!(
+            "Xbox : se connecter à l'application mobile (série de {} jour{})",
+            xbox.mobile_streak,
+            if xbox.mobile_streak > 1 { "s" } else { "" }
+        ));
+    }
+    if settings.xbox_mobile && !xbox.today.jewel {
+        lines.push("Xbox : terminer un niveau de Jewel dans l'application mobile".into());
+    }
+    if game_pass && !xbox.today.game_pass {
+        lines.push(format!(
+            "Xbox : jouer 15 min à un jeu Game Pass (série {}/5 jours)",
+            xbox.game_pass_days
+        ));
+    }
+    lines
+}
+
+/// Semaine d'anniversaire (lundi à dimanche) : l'offre est à consulter dans les Rewards Xbox,
+/// et le cadeau se réclame la semaine suivante. Un rappel au début de chacune des deux.
+fn maybe_birthday_reminder<R: Runtime>(app: &AppHandle<R>, settings: &Settings) {
+    let today = Local::now().date_naive();
+    let Ok(birthday) = NaiveDate::parse_from_str(
+        &format!("{}-{}", today.year(), settings.birthday.trim()),
+        "%Y-%m-%d",
+    ) else {
+        return;
+    };
+    let monday =
+        |d: NaiveDate| d - chrono::Duration::days(d.weekday().num_days_from_monday() as i64);
+    let week = monday(birthday);
+    let state = app.state::<AppState>();
+    if monday(today) == week {
+        if state
+            .store
+            .first_alert(&format!("anniversaire#{}", today.year()))
+        {
+            crate::notify_with(
+                app,
+                "Semaine d'anniversaire Xbox Rewards",
+                "Ouvrez le Rewards Hub de l'app Xbox pour voir votre offre d'anniversaire. Cette semaine, les jeux et extensions achetés dans le Store rapportent le double de points.",
+                crate::ClickAction::OpenMain(Some("today")),
+            );
+        }
+    } else if monday(today) == week + chrono::Duration::days(7)
+        && state
+            .store
+            .first_alert(&format!("cadeau-anniversaire#{}", today.year()))
+    {
+        crate::notify_with(
+            app,
+            "Cadeau d'anniversaire à réclamer",
+            "Votre cadeau d'anniversaire Xbox Rewards se réclame cette semaine dans le Rewards Hub de l'app Xbox.",
+            crate::ClickAction::OpenMain(Some("today")),
+        );
+    }
 }
 
 fn xbox_lines(rewards: &crate::xbox::XboxRewards) -> Vec<String> {

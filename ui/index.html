@@ -102,35 +102,18 @@
             </div>
             <div id="xbox-live" class="xbox-live"></div>
             <div id="xbox-manual">
-            <div class="xbox">
-              <div class="xbox-today">
-                <div id="xbox-today-state"></div>
-                <form id="xbox-form" class="inline">
-                  <label for="xbox-game" class="sr-only">Jeu joué</label>
-                  <input id="xbox-game" list="known-games" placeholder="Jeu joué (facultatif)" autocomplete="off">
-                  <datalist id="known-games"></datalist>
-                  <button class="btn primary" type="submit">J'ai joué 15 min aujourd'hui</button>
-                </form>
-                <button class="btn ghost" id="xbox-undo" hidden>Annuler pour aujourd'hui</button>
-              </div>
-              <div class="xbox-goals">
-                <div class="goal">
-                  <span class="label">Bonus hebdo PC</span>
-                  <b id="week-count">0 / 5 jours</b>
-                  <div class="week-days" id="week-days" role="group" aria-label="Jours joués cette semaine"></div>
-                  <span class="muted small">Cliquez sur un jour pour le cocher ou le décocher, et recaler le compteur sur l'app Xbox.</span>
-                </div>
-                <div class="goal" id="month-goal">
-                  <span class="label">Packs mensuels</span>
-                  <b id="month-count">0 jeu différent</b>
-                  <div class="dots" id="month-dots"></div>
-                  <span class="muted small" id="month-games"></span>
-                </div>
-              </div>
+            <h3 class="xbox-group">Quêtes du jour</h3>
+            <div class="xq-daily" id="xq-daily"></div>
+            <h3 class="xbox-group">Séries de la semaine <span class="muted small">· remise à zéro le lundi</span></h3>
+            <div class="xq-series" id="xq-weekly"></div>
+            <div id="xq-monthly-wrap">
+              <h3 class="xbox-group">Packs du mois <span class="muted small">· remise à zéro le 1er</span></h3>
+              <div id="xq-monthly"></div>
             </div>
+            <datalist id="known-games"></datalist>
             <p class="muted small" id="xbox-sync-note"></p>
             <label class="check small"><input type="checkbox" id="auto-xbox-days"> Cocher les jours joués d'après l'historique des jeux Xbox Live (compte Xbox Live connecté)</label>
-            <p class="muted small">Suivi manuel : l'avancement repose sur les jours cochés ici. Les points se réclament dans le Rewards Hub de l'app Xbox.</p>
+            <p class="muted small">Cliquez sur une quête ou un jour pour le cocher ou le décocher, et recaler le suivi sur le Rewards Hub de l'app Xbox. Les points se réclament dans l'app Xbox. Appareils et formule se règlent dans les Paramètres.</p>
             </div>
           </article>
 
@@ -250,7 +233,7 @@
         </article>
 
         <article class="panel">
-          <h2>Abonnement Game Pass</h2>
+          <h2>Xbox et Game Pass</h2>
           <div class="form">
             <label for="subscription">Votre formule</label>
             <select id="subscription">
@@ -262,6 +245,16 @@
             </select>
             <span></span>
             <div><button class="btn" id="detect-subscription" type="button">Détecter ma formule</button> <span class="muted small" id="subscription-status"></span></div>
+          </div>
+          <div class="form">
+            <span class="label-like">Mes appareils</span>
+            <div class="checks-inline">
+              <label class="check"><input type="checkbox" id="xbox-pc"> PC</label>
+              <label class="check"><input type="checkbox" id="xbox-console"> Console</label>
+              <label class="check"><input type="checkbox" id="xbox-mobile"> Application mobile Xbox</label>
+            </div>
+            <label for="birthday">Anniversaire</label>
+            <div><input type="date" id="birthday"> <span class="muted small">Pour le rappel de l'offre et du cadeau d'anniversaire Xbox Rewards (l'année n'est pas gardée).</span></div>
           </div>
           <p class="muted small">Sert à afficher les quêtes auxquelles votre formule donne accès. La formule est relue chaque semaine sur la page « Services et abonnements » de votre compte Microsoft ; le bouton ouvre cette page, où vous pouvez vous reconnecter si Microsoft le demande.</p>
         </article>

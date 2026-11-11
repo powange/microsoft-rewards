@@ -52,6 +52,12 @@ pub struct Settings {
     pub weekly_summary: bool,
     /// Cocher les jours joués d'après l'historique des jeux Xbox Live (compte connecté).
     pub auto_xbox_days: bool,
+    /// Appareils joués : seules leurs quêtes Xbox sont affichées et rappelées.
+    pub xbox_pc: bool,
+    pub xbox_console: bool,
+    pub xbox_mobile: bool,
+    /// Anniversaire au format `MM-JJ` (vide : pas de rappel du cadeau Xbox Rewards).
+    pub birthday: String,
     pub subscription: Subscription,
     pub auto_check_updates: bool,
     /// Délai entre deux recherches de mise à jour, en minutes.
@@ -83,6 +89,10 @@ impl Default for Settings {
             notify_level: true,
             weekly_summary: true,
             auto_xbox_days: true,
+            xbox_pc: true,
+            xbox_console: false,
+            xbox_mobile: true,
+            birthday: String::new(),
             subscription: Subscription::None,
             auto_check_updates: true,
             update_check_interval_minutes: 360,
@@ -121,11 +131,68 @@ impl Settings {
     }
 }
 
-/// Une journée où l'utilisateur a joué au moins 15 minutes à un jeu Game Pass.
+/// Ancien format : une journée jouée sur PC, avec le nom du jeu.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XboxSession {
     pub game: String,
+}
+
+/// Une quête ou série du Rewards Hub de l'app Xbox, telle qu'on la coche pour un jour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum XboxActivity {
+    /// 15 minutes de jeu sur PC (quête du jour et bonus hebdomadaire PC).
+    Pc,
+    /// 15 minutes de jeu sur console (quête du jour et bonus console hebdomadaire).
+    Console,
+    /// Connexion à l'application mobile Xbox (série mobile quotidienne).
+    MobileApp,
+    /// Un niveau de Jewel dans l'application mobile (quête du jour).
+    Jewel,
+    /// 15 minutes d'un jeu Game Pass (quête du jour et série hebdomadaire Game Pass).
+    GamePass,
+}
+
+/// Ce qui a été fait un jour donné.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DayPlay {
+    pub pc: bool,
+    pub console: bool,
+    pub mobile_app: bool,
+    pub jewel: bool,
+    pub game_pass: bool,
+}
+
+impl DayPlay {
+    pub fn get(&self, activity: XboxActivity) -> bool {
+        match activity {
+            XboxActivity::Pc => self.pc,
+            XboxActivity::Console => self.console,
+            XboxActivity::MobileApp => self.mobile_app,
+            XboxActivity::Jewel => self.jewel,
+            XboxActivity::GamePass => self.game_pass,
+        }
+    }
+
+    fn set(&mut self, activity: XboxActivity, value: bool) {
+        match activity {
+            XboxActivity::Pc => self.pc = value,
+            XboxActivity::Console => self.console = value,
+            XboxActivity::MobileApp => self.mobile_app = value,
+            XboxActivity::Jewel => self.jewel = value,
+            XboxActivity::GamePass => self.game_pass = value,
+        }
+    }
+}
+
+fn month_key(day: NaiveDate) -> String {
+    day.format("%Y-%m").to_string()
+}
+
+fn week_start(day: NaiveDate) -> NaiveDate {
+    day - chrono::Duration::days(day.weekday().num_days_from_monday() as i64)
 }
 
 /// Quête que l'utilisateur suit. Titre et lien sont gardés pour pouvoir l'afficher même
@@ -145,7 +212,14 @@ pub struct FollowedQuest {
 #[serde(rename_all = "camelCase", default)]
 struct Persisted {
     settings: Settings,
+    /// Ancien suivi (un jeu PC par jour), repris dans `xbox_days` au chargement.
     xbox_sessions: BTreeMap<NaiveDate, XboxSession>,
+    /// Ce qui a été fait chaque jour pour les quêtes Xbox.
+    xbox_days: BTreeMap<NaiveDate, DayPlay>,
+    /// Jeux joués chaque mois (« 2026-11 »), pour les packs de 4 et 8 jeux Game Pass.
+    month_games: BTreeMap<String, Vec<String>>,
+    /// Jeux joués ce mois-là sans être nommés, ajoutés à la main.
+    month_extra: BTreeMap<String, u32>,
     last_reminder: Option<NaiveDate>,
     /// Jour du dernier rappel du soir pour les séries.
     last_streak_reminder: Option<NaiveDate>,
@@ -185,24 +259,34 @@ const HISTORY_DAYS: i64 = 400;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XboxProgress {
+    /// Ce qui est fait aujourd'hui.
+    pub today: DayPlay,
+    /// Les sept jours de la semaine en cours (lundi à dimanche, remise à zéro le lundi).
+    pub week: Vec<WeekDay>,
+    /// Jours de la semaine joués sur PC, sur console, et à un jeu Game Pass.
+    pub pc_days: u32,
+    pub console_days: u32,
+    pub game_pass_days: u32,
+    /// Jours consécutifs de connexion à l'application mobile, jusqu'à aujourd'hui (ou hier si
+    /// aujourd'hui n'est pas encore fait).
+    pub mobile_streak: u32,
+    /// Jeux joués ce mois-ci (packs de 4 et 8 jeux Game Pass), et jeux non nommés en plus.
+    pub month_games: Vec<String>,
+    pub month_extra: u32,
+    pub month_count: u32,
+    /// Noms déjà vus, proposés en suggestion.
+    pub known_games: Vec<String>,
+    /// Résumé pour le rappel et la mini-fenêtre : jeu PC du jour fait, jours PC de la semaine.
     pub today_done: bool,
-    pub today_game: Option<String>,
-    /// Jours joués dans la semaine en cours (lundi à dimanche).
     pub week_days: u32,
     pub week_target: u32,
-    /// Jeux différents joués dans le mois en cours, pour les packs 4 et 8 jeux.
-    pub month_games: Vec<String>,
-    /// Noms déjà saisis, proposés en suggestion.
-    pub known_games: Vec<String>,
-    /// Les sept jours de la semaine en cours, pour cocher ou décocher un jour joué.
-    pub week: Vec<WeekDay>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WeekDay {
     pub date: NaiveDate,
-    pub played: bool,
+    pub play: DayPlay,
     /// Jour à venir : il ne peut pas encore être coché.
     pub future: bool,
 }
@@ -222,6 +306,20 @@ fn read_state(path: &Path) -> Result<Option<Persisted>, String> {
             .map_err(|e| e.to_string()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err.to_string()),
+    }
+}
+
+/// Reprend l'ancien suivi (un jeu PC par jour) dans le suivi par quête.
+fn migrate_xbox_sessions(data: &mut Persisted) {
+    for (day, session) in std::mem::take(&mut data.xbox_sessions) {
+        data.xbox_days.entry(day).or_default().pc = true;
+        let game = session.game.trim().to_string();
+        if !game.is_empty() {
+            let games = data.month_games.entry(month_key(day)).or_default();
+            if !games.iter().any(|g| g.eq_ignore_ascii_case(&game)) {
+                games.push(game);
+            }
+        }
     }
 }
 
@@ -253,6 +351,8 @@ impl Store {
                 }
             }
         };
+        let mut data = data;
+        migrate_xbox_sessions(&mut data);
         Self {
             path,
             data: Mutex::new(data),
@@ -472,54 +572,75 @@ impl Store {
         data.followed_quests.clone()
     }
 
-    /// Marque (ou démarque avec `None`) la session Xbox du jour.
-    pub fn set_xbox_today(&self, game: Option<String>) {
-        self.set_xbox_day(Local::now().date_naive(), game);
-    }
-
-    /// Marque (ou démarque avec `None`) un jour joué : permet de recaler le suivi sur l'app
-    /// Xbox quand un jour n'a pas été coché à temps. Les jours à venir sont ignorés.
-    pub fn set_xbox_day(&self, today: NaiveDate, game: Option<String>) {
-        if today > Local::now().date_naive() {
+    /// Coche ou décoche une quête pour un jour (aujourd'hui ou un jour passé, pour se recaler
+    /// sur l'app Xbox). Les jours à venir sont ignorés.
+    pub fn set_xbox_activity(&self, day: NaiveDate, activity: XboxActivity, done: bool) {
+        if day > Local::now().date_naive() {
             return;
         }
         let mut data = self.data.lock().unwrap();
-        match game {
-            Some(game) => {
-                data.xbox_sessions.insert(
-                    today,
-                    XboxSession {
-                        game: game.trim().to_string(),
-                    },
-                );
-            }
-            None => {
-                data.xbox_sessions.remove(&today);
-            }
+        let entry = data.xbox_days.entry(day).or_default();
+        entry.set(activity, done);
+        if *entry == DayPlay::default() {
+            data.xbox_days.remove(&day);
         }
         self.save(&data);
     }
 
-    /// Jour joué détecté automatiquement : ajouté s'il manque, nommé s'il était coché sans jeu.
-    /// Un jour coché à la main n'est jamais retiré. Renvoie `true` si le suivi a changé.
-    pub fn record_played(&self, day: NaiveDate, game: &str) -> bool {
+    /// Ajoute un jeu à la liste du mois en cours (sans doublon, casse ignorée).
+    pub fn add_month_game(&self, game: &str) {
+        let game = game.trim();
+        if game.is_empty() {
+            return;
+        }
         let mut data = self.data.lock().unwrap();
-        let changed = match data.xbox_sessions.get_mut(&day) {
-            Some(session) if session.game.is_empty() => {
-                session.game = game.trim().to_string();
-                true
+        let games = data
+            .month_games
+            .entry(month_key(Local::now().date_naive()))
+            .or_default();
+        if !games.iter().any(|g| g.eq_ignore_ascii_case(game)) {
+            games.push(game.to_string());
+            self.save(&data);
+        }
+    }
+
+    pub fn remove_month_game(&self, game: &str) {
+        let mut data = self.data.lock().unwrap();
+        if let Some(games) = data
+            .month_games
+            .get_mut(&month_key(Local::now().date_naive()))
+        {
+            games.retain(|g| !g.eq_ignore_ascii_case(game.trim()));
+        }
+        self.save(&data);
+    }
+
+    /// Jeux joués ce mois-ci sans être nommés (les packs ne comptent que le nombre).
+    pub fn set_month_extra(&self, extra: u32) {
+        let mut data = self.data.lock().unwrap();
+        data.month_extra
+            .insert(month_key(Local::now().date_naive()), extra.min(8));
+        self.save(&data);
+    }
+
+    /// Partie détectée automatiquement : coche l'activité ce jour-là et ajoute le jeu au mois.
+    /// Rien n'est jamais décoché ni retiré. Renvoie `true` si le suivi a changé.
+    pub fn record_detected(&self, day: NaiveDate, activity: XboxActivity, game: &str) -> bool {
+        let mut data = self.data.lock().unwrap();
+        let mut changed = false;
+        let entry = data.xbox_days.entry(day).or_default();
+        if !entry.get(activity) {
+            entry.set(activity, true);
+            changed = true;
+        }
+        let game = game.trim();
+        if !game.is_empty() {
+            let games = data.month_games.entry(month_key(day)).or_default();
+            if !games.iter().any(|g| g.eq_ignore_ascii_case(game)) {
+                games.push(game.to_string());
+                changed = true;
             }
-            Some(_) => false,
-            None => {
-                data.xbox_sessions.insert(
-                    day,
-                    XboxSession {
-                        game: game.trim().to_string(),
-                    },
-                );
-                true
-            }
-        };
+        }
         if changed {
             self.save(&data);
         }
@@ -528,53 +649,62 @@ impl Store {
 
     pub fn xbox_progress(&self) -> XboxProgress {
         let today = Local::now().date_naive();
-        let week_start =
-            today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+        let start = week_start(today);
         let data = self.data.lock().unwrap();
+        let day = |d: NaiveDate| data.xbox_days.get(&d).cloned().unwrap_or_default();
 
-        let today_game = data.xbox_sessions.get(&today).map(|s| s.game.clone());
-        let week_days = data.xbox_sessions.range(week_start..=today).count() as u32;
-
-        let mut seen = BTreeSet::new();
-        let mut month_games = Vec::new();
-        for (day, session) in &data.xbox_sessions {
-            if day.year() == today.year()
-                && day.month() == today.month()
-                && !session.game.is_empty()
-                && seen.insert(session.game.to_lowercase())
-            {
-                month_games.push(session.game.clone());
-            }
-        }
-
-        let mut known = BTreeSet::new();
-        let known_games = data
-            .xbox_sessions
-            .values()
-            .rev()
-            .filter(|s| !s.game.is_empty() && known.insert(s.game.to_lowercase()))
-            .map(|s| s.game.clone())
-            .collect();
-
-        let week = (0..7)
+        let week: Vec<WeekDay> = (0..7)
             .map(|i| {
-                let date = week_start + chrono::Duration::days(i);
+                let date = start + chrono::Duration::days(i);
                 WeekDay {
                     date,
-                    played: data.xbox_sessions.contains_key(&date),
+                    play: day(date),
                     future: date > today,
                 }
             })
             .collect();
+        let count = |f: fn(&DayPlay) -> bool| week.iter().filter(|d| f(&d.play)).count() as u32;
 
+        let mut mobile_streak = 0;
+        let mut cursor = if day(today).mobile_app {
+            today
+        } else {
+            today - chrono::Duration::days(1)
+        };
+        while day(cursor).mobile_app {
+            mobile_streak += 1;
+            cursor -= chrono::Duration::days(1);
+        }
+
+        let month = month_key(today);
+        let month_games = data.month_games.get(&month).cloned().unwrap_or_default();
+        let month_extra = data.month_extra.get(&month).copied().unwrap_or(0);
+        let mut seen = BTreeSet::new();
+        let known_games = data
+            .month_games
+            .values()
+            .rev()
+            .flatten()
+            .filter(|g| seen.insert(g.to_lowercase()))
+            .cloned()
+            .collect();
+
+        let today_play = day(today);
+        let pc_days = count(|d| d.pc);
         XboxProgress {
-            week,
-            today_done: today_game.is_some(),
-            today_game,
-            week_days,
-            week_target: 5,
+            today_done: today_play.pc,
+            today: today_play,
+            pc_days,
+            console_days: count(|d| d.console),
+            game_pass_days: count(|d| d.game_pass),
+            mobile_streak,
+            month_count: (month_games.len() as u32 + month_extra).min(8),
             month_games,
+            month_extra,
             known_games,
+            week,
+            week_days: pc_days,
+            week_target: 5,
         }
     }
 }
@@ -677,12 +807,21 @@ mod tests {
         let store = Store::load(path.clone());
         let today = Local::now().date_naive();
         let monday = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
-        store.set_xbox_day(monday, Some(String::new()));
-        store.set_xbox_day(today + chrono::Duration::days(1), Some(String::new()));
+        store.set_xbox_activity(monday, XboxActivity::Pc, true);
+        store.set_xbox_activity(today + chrono::Duration::days(1), XboxActivity::Pc, true);
+        store.set_xbox_activity(today, XboxActivity::MobileApp, true);
         let progress = store.xbox_progress();
         assert_eq!(progress.week.len(), 7);
-        assert!(progress.week[0].played);
-        assert_eq!(progress.week_days, 1, "un jour à venir ne compte pas");
+        assert!(progress.week[0].play.pc);
+        assert_eq!(progress.pc_days, 1, "un jour à venir ne compte pas");
+        assert_eq!(progress.mobile_streak, 1);
+        // La détection ajoute sans retirer, et remplit la liste du mois.
+        assert!(store.record_detected(today, XboxActivity::Pc, "Sea of Thieves"));
+        assert!(!store.record_detected(today, XboxActivity::Pc, "sea of thieves"));
+        store.set_month_extra(2);
+        let progress = store.xbox_progress();
+        assert_eq!(progress.month_games, vec!["Sea of Thieves"]);
+        assert_eq!(progress.month_count, 3);
         let _ = std::fs::remove_file(path);
     }
 
@@ -721,5 +860,24 @@ mod tests {
         for ext in ["", ".bak"] {
             let _ = std::fs::remove_file(with_extension(&path, ext));
         }
+    }
+
+    #[test]
+    fn reprend_l_ancien_suivi_xbox() {
+        let path = std::env::temp_dir().join(format!(
+            "rewards-autoplay-migrate-{}.json",
+            std::process::id()
+        ));
+        let today = Local::now().date_naive();
+        std::fs::write(
+            &path,
+            format!(r#"{{"xboxSessions":{{"{today}":{{"game":"Sea of Thieves"}}}}}}"#),
+        )
+        .unwrap();
+        let store = Store::load(path.clone());
+        let progress = store.xbox_progress();
+        assert!(progress.today.pc);
+        assert_eq!(progress.month_games, vec!["Sea of Thieves"]);
+        let _ = std::fs::remove_file(path);
     }
 }

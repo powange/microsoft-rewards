@@ -468,6 +468,8 @@ pub struct PlayedTitle {
     pub name: String,
     pub last_played: DateTime<Utc>,
     pub devices: Vec<String>,
+    /// Jeu du catalogue Game Pass, quand l'historique le précise.
+    pub game_pass: Option<bool>,
 }
 
 /// Historique des jeux du compte. Il ne donne que la dernière partie de chaque jeu : les
@@ -524,10 +526,15 @@ fn parse_title_history(json: &Value) -> Vec<PlayedTitle> {
                         .collect()
                 })
                 .unwrap_or_default();
+            let game_pass = t
+                .get("gamePass")
+                .and_then(|g| g.get("isGamePass"))
+                .and_then(Value::as_bool);
             Some(PlayedTitle {
                 name,
                 last_played,
                 devices,
+                game_pass,
             })
         })
         .collect()
@@ -542,15 +549,39 @@ pub async fn sync_played_days<R: Runtime>(app: &AppHandle<R>) -> bool {
     let result = title_history(app).await;
     let mut changed = false;
     if let Ok(titles) = &result {
-        let store = &app.state::<AppState>().store;
+        use crate::store::XboxActivity;
+        let state = app.state::<AppState>();
+        let game_pass_tier = matches!(
+            state.store.settings().subscription,
+            crate::store::Subscription::Premium | crate::store::Subscription::Ultimate
+        );
         let today = Local::now().date_naive();
         for title in titles {
-            let pc =
-                title.devices.is_empty() || title.devices.iter().any(|d| d == "PC" || d == "Win32");
             let day = title.last_played.with_timezone(&Local).date_naive();
-            let recent = (today - day).num_days() < 31;
-            if pc && recent {
-                changed |= store.record_played(day, &title.name);
+            if (today - day).num_days() >= 31 {
+                continue;
+            }
+            let on = |names: &[&str]| title.devices.iter().any(|d| names.contains(&d.as_str()));
+            let pc = title.devices.is_empty() || on(&["PC", "Win32"]);
+            let console = on(&["XboxSeries", "XboxOne", "Xbox360", "Scarlett", "Durango"]);
+            // Le nom ne compte pour les packs mensuels que pour un jeu Game Pass (ou inconnu).
+            let pack_game = if title.game_pass != Some(false) {
+                title.name.as_str()
+            } else {
+                ""
+            };
+            if pc {
+                changed |= state
+                    .store
+                    .record_detected(day, XboxActivity::Pc, pack_game);
+            }
+            if console {
+                changed |= state
+                    .store
+                    .record_detected(day, XboxActivity::Console, pack_game);
+            }
+            if game_pass_tier && title.game_pass == Some(true) && (pc || console) {
+                changed |= state.store.record_detected(day, XboxActivity::GamePass, "");
             }
         }
     }
