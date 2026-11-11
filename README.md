@@ -15,6 +15,11 @@ Application Windows (Rust + Tauri 2) qui suit vos points Microsoft Rewards et vo
 - Alerte avant la fin d'une quête : une quête pas terminée qui expire dans moins de 48 heures est signalée (une fois) et marquée « Expire dans N h ».
 - Mini-fenêtre : un clic gauche sur l'icône de la zone de notification affiche solde, tâches du jour, séries et objectif ; double-clic pour la fenêtre principale.
 - Session guidée « Faire mes tâches » : les tâches à faire s'ouvrent une par une dans la fenêtre Microsoft Rewards, avec un bandeau « Tâche suivante » ; chaque tâche reste lancée par l'utilisateur.
+- Niveau : points du mois, ce qu'il manque pour garder le niveau et pour le suivant ; alerte dans les trois derniers jours du mois si le niveau n'est pas assuré.
+- Bilan de la semaine le dimanche soir, rappel des séries le soir, notification de chaque nouvelle recherche Bing (un clic la lance puis referme les fenêtres).
+- Formule Game Pass détectée sur la page « Services et abonnements » du compte Microsoft (chaque semaine, ou à la demande).
+- Jours de jeu Xbox cochés d'après l'historique des jeux Xbox Live (compte connecté), et modifiables à la main.
+- Sauvegarde et restauration des réglages, quêtes suivies, objectif, historique et suivi Xbox.
 - Quêtes suivies : une étoile sur chaque quête pour la retrouver, avec toutes ses étapes, dans une page dédiée.
 - Actualisation automatique des points, séries et quêtes toutes les N minutes (réglable, 30 par défaut).
 - Récompenses par jeu : recherche d'un jeu (ex. Sea of Thieves) pour voir les quêtes en cours qui le concernent (cartes à poinçonner avec leurs étapes, lien vers la page de la quête) et les articles du catalogue d'échange (prix, points manquants).

@@ -46,6 +46,12 @@ pub struct Settings {
     pub remind_streaks_evening: bool,
     /// Heure du rappel du soir pour les séries, au format `HH:MM`.
     pub streak_reminder_time: String,
+    /// Alerte dans les derniers jours du mois si le niveau actuel n'est pas assuré.
+    pub notify_level: bool,
+    /// Bilan de la semaine, le dimanche soir.
+    pub weekly_summary: bool,
+    /// Cocher les jours joués d'après l'historique des jeux Xbox Live (compte connecté).
+    pub auto_xbox_days: bool,
     pub subscription: Subscription,
     pub auto_check_updates: bool,
     /// Délai entre deux recherches de mise à jour, en minutes.
@@ -74,6 +80,9 @@ impl Default for Settings {
             notify_new_searches: true,
             remind_streaks_evening: true,
             streak_reminder_time: "22:00".into(),
+            notify_level: true,
+            weekly_summary: true,
+            auto_xbox_days: true,
             subscription: Subscription::None,
             auto_check_updates: true,
             update_check_interval_minutes: 360,
@@ -151,6 +160,8 @@ struct Persisted {
     sent_alerts: BTreeSet<String>,
     /// Recherches Bing à faire lors de la dernière actualisation (`None` : jamais relevées).
     known_searches: Option<BTreeSet<String>>,
+    /// Dernière détection réussie de la formule Game Pass.
+    subscription_checked: Option<NaiveDate>,
 }
 
 /// Objectif d'échange : un article du catalogue Rewards.
@@ -247,6 +258,23 @@ impl Store {
             data: Mutex::new(data),
             load_warning,
         }
+    }
+
+    /// Sauvegarde complète (réglages, quêtes suivies, objectif, historique, suivi Xbox), au
+    /// format du fichier d'état. Aucun mot de passe ni jeton n'y figure.
+    pub fn export_json(&self) -> String {
+        let data = self.data.lock().unwrap();
+        serde_json::to_string_pretty(&*data).unwrap_or_default()
+    }
+
+    /// Remplace tout l'état par une sauvegarde, après avoir vérifié qu'elle se lit.
+    pub fn import_json(&self, text: &str) -> Result<(), String> {
+        let imported: Persisted = serde_json::from_str(text)
+            .map_err(|e| format!("fichier de sauvegarde illisible : {e}"))?;
+        let mut data = self.data.lock().unwrap();
+        *data = imported;
+        self.save(&data);
+        Ok(())
     }
 
     pub fn load_warning(&self) -> Option<&str> {
@@ -362,6 +390,33 @@ impl Store {
         previous
     }
 
+    /// Points gagnés entre deux dates incluses : somme des hausses du solde d'un relevé à
+    /// l'autre (une baisse est un échange, pas une perte de gains).
+    pub fn points_gained(&self, from: NaiveDate, to: NaiveDate) -> i64 {
+        let data = self.data.lock().unwrap();
+        let mut previous: Option<i64> = None;
+        let mut gained = 0;
+        for (day, balance) in &data.points_history {
+            if let Some(before) = previous {
+                if *day >= from && *day <= to {
+                    gained += (balance - before).max(0);
+                }
+            }
+            previous = Some(*balance);
+        }
+        gained
+    }
+
+    pub fn subscription_checked(&self) -> Option<NaiveDate> {
+        self.data.lock().unwrap().subscription_checked
+    }
+
+    pub fn set_subscription_checked(&self, day: NaiveDate) {
+        let mut data = self.data.lock().unwrap();
+        data.subscription_checked = Some(day);
+        self.save(&data);
+    }
+
     pub fn goal(&self) -> Option<Goal> {
         self.data.lock().unwrap().goal.clone()
     }
@@ -443,6 +498,32 @@ impl Store {
             }
         }
         self.save(&data);
+    }
+
+    /// Jour joué détecté automatiquement : ajouté s'il manque, nommé s'il était coché sans jeu.
+    /// Un jour coché à la main n'est jamais retiré. Renvoie `true` si le suivi a changé.
+    pub fn record_played(&self, day: NaiveDate, game: &str) -> bool {
+        let mut data = self.data.lock().unwrap();
+        let changed = match data.xbox_sessions.get_mut(&day) {
+            Some(session) if session.game.is_empty() => {
+                session.game = game.trim().to_string();
+                true
+            }
+            Some(_) => false,
+            None => {
+                data.xbox_sessions.insert(
+                    day,
+                    XboxSession {
+                        game: game.trim().to_string(),
+                    },
+                );
+                true
+            }
+        };
+        if changed {
+            self.save(&data);
+        }
+        changed
     }
 
     pub fn xbox_progress(&self) -> XboxProgress {
@@ -603,5 +684,42 @@ mod tests {
         assert!(progress.week[0].played);
         assert_eq!(progress.week_days, 1, "un jour à venir ne compte pas");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn points_gagnes_sans_compter_les_echanges() {
+        let path =
+            std::env::temp_dir().join(format!("rewards-autoplay-gain-{}.json", std::process::id()));
+        let store = Store::load(path.clone());
+        let d = |n| NaiveDate::from_ymd_opt(2026, 11, n).unwrap();
+        store.record_balance(d(1), 1000);
+        store.record_balance(d(2), 1100);
+        store.record_balance(d(3), 400); // échange
+        store.record_balance(d(4), 450);
+        assert_eq!(store.points_gained(d(2), d(4)), 150);
+        assert_eq!(store.points_gained(d(4), d(4)), 50);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn sauvegarde_et_restauration() {
+        let path = std::env::temp_dir().join(format!(
+            "rewards-autoplay-backup-{}.json",
+            std::process::id()
+        ));
+        let store = Store::load(path.clone());
+        store.set_followed("sot", "Sea of Thieves", None, None, true);
+        let backup = store.export_json();
+        store.set_followed("sot", "Sea of Thieves", None, None, false);
+        assert!(store.import_json("pas du json").is_err());
+        assert!(
+            store.followed_quests().is_empty(),
+            "un fichier illisible ne change rien"
+        );
+        store.import_json(&backup).unwrap();
+        assert_eq!(store.followed_quests().len(), 1);
+        for ext in ["", ".bak"] {
+            let _ = std::fs::remove_file(with_extension(&path, ext));
+        }
     }
 }

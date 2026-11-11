@@ -178,6 +178,40 @@ function activityItem(activity) {
     h("span", { class: "pts" }, activity.points ? `${activity.points} pts` : ""));
 }
 
+/**
+ * Niveau : il dépend des points gagnés chaque mois. Affiche les points du mois, ce qu'il
+ * manque pour garder le niveau actuel (s'il n'est pas encore assuré) et pour le suivant.
+ */
+function renderLevel(summary) {
+  const status = summary.levelStatus;
+  const box = $("level");
+  if (!status) {
+    const parts = [];
+    if (summary.level) parts.push(`Niveau : ${summary.level}`);
+    if (summary.levelProgressMax) parts.push(`${numberFormat.format(summary.levelProgress ?? 0)} / ${numberFormat.format(summary.levelProgressMax)} points vers le niveau suivant`);
+    box.replaceChildren(parts.join(" · "));
+    return;
+  }
+  const now = new Date();
+  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const daysLeft = monthEnd.getDate() - now.getDate() + 1;
+  const level = (n) => status.levels.find((l) => l.level === n);
+  const current = level(status.current);
+  const next = level(status.current + 1);
+  const pts = (n) => numberFormat.format(n);
+  const parts = [h("span", {}, `Niveau : ${status.name ?? summary.level ?? status.current}`), ` · ce mois-ci ${pts(status.monthPoints)} pts`];
+  if (current?.points && status.monthPoints < current.points) {
+    parts.push(" · ", h("b", { class: "level-risk" }, `encore ${pts(current.points - status.monthPoints)} pts pour garder le niveau ${current.title ?? ""}`));
+  }
+  if (next?.points) {
+    const missing = Math.max(0, next.points - status.monthPoints);
+    const activities = next.activities ? ` et ${next.activities} activités de montée en niveau` : "";
+    parts.push(` · ${next.title ?? "niveau suivant"} : ${missing ? `encore ${pts(missing)} pts` : "points atteints"}${activities}`);
+  }
+  parts.push(` · ${daysLeft} jour${daysLeft > 1 ? "s" : ""} restant${daysLeft > 1 ? "s" : ""} dans le mois`);
+  box.replaceChildren(...parts);
+}
+
 /** Lecture incomplète : le site a probablement changé ; proposer de le signaler. */
 function renderSiteWarning(warnings) {
   $("site-warning").hidden = !warnings.length;
@@ -204,10 +238,7 @@ function renderSummary(summary) {
   state.summary = summary;
   renderToday();
   $("points").textContent = numberFormat.format(summary.availablePoints);
-  const level = [];
-  if (summary.level) level.push(`Niveau : ${summary.level}`);
-  if (summary.levelProgressMax) level.push(`${numberFormat.format(summary.levelProgress ?? 0)} / ${numberFormat.format(summary.levelProgressMax)} points vers le niveau suivant`);
-  $("level").textContent = level.join(" · ");
+  renderLevel(summary);
   const claim = $("claim");
   claim.hidden = false;
   claim.disabled = summary.claimablePoints <= 0;
@@ -611,6 +642,7 @@ function missionItem(m) {
 function renderXboxLive() {
   const box = $("xbox-live");
   const { status, rewards, error, loading } = xboxLive;
+  $("xbox-sync-note").textContent = status.connected ? status.playedSync ?? "" : "";
   const refused = error?.startsWith("xbox_refused");
   // Le suivi manuel reste affiché tant que les vraies données ne sont pas disponibles.
   $("xbox-manual").hidden = Boolean(status.connected && rewards && !error);
@@ -1145,6 +1177,9 @@ async function saveSettings(control) {
     notifyExpiring: $("notify-expiring").checked,
     notifyNewSearches: $("notify-new-searches").checked,
     remindStreaksEvening: $("remind-streaks-evening").checked,
+    notifyLevel: $("notify-level").checked,
+    weeklySummary: $("weekly-summary").checked,
+    autoXboxDays: $("auto-xbox-days").checked,
     streakReminderTime: $("streak-reminder-time").value || "22:00",
     subscription: $("subscription").value,
     autoCheckUpdates: $("auto-update").checked,
@@ -1172,6 +1207,9 @@ function renderSettings(settings) {
   $("notify-expiring").checked = settings.notifyExpiring;
   $("notify-new-searches").checked = settings.notifyNewSearches;
   $("remind-streaks-evening").checked = settings.remindStreaksEvening;
+  $("notify-level").checked = settings.notifyLevel;
+  $("weekly-summary").checked = settings.weeklySummary;
+  $("auto-xbox-days").checked = settings.autoXboxDays;
   $("streak-reminder-time").value = settings.streakReminderTime;
   $("subscription").value = settings.subscription;
   $("auto-update").checked = settings.autoCheckUpdates;
@@ -1209,7 +1247,7 @@ function refreshMinutesInput() {
   return minutes;
 }
 
-for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "remind-streaks-evening", "streak-reminder-time", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval"]) {
+for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "remind-streaks-evening", "streak-reminder-time", "notify-level", "weekly-summary", "auto-xbox-days", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval"]) {
   $(id).addEventListener("change", () => saveSettings($(id)));
 }
 
@@ -1228,6 +1266,63 @@ $("test-reminder").addEventListener("click", async () => {
   const lines = await invoke("send_test_reminder");
   $("test-reminder-result").textContent = lines.length ? "Notification envoyée." : "Rien à faire aujourd'hui, aucune notification envoyée.";
 });
+
+// ---------- Formule Game Pass (N4) ----------
+
+const checkedFormat = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long" });
+
+async function renderSubscriptionStatus() {
+  const checked = await invoke("subscription_checked").catch(() => null);
+  $("subscription-status").textContent = checked ? `Détectée le ${checkedFormat.format(dayDate(checked))}` : "";
+}
+
+$("detect-subscription").addEventListener("click", async () => {
+  const button = $("detect-subscription");
+  button.disabled = true;
+  $("subscription-status").textContent = "Lecture de la page de votre compte…";
+  try {
+    renderSettings(await invoke("detect_subscription"));
+    renderXbox(await invoke("xbox_progress"));
+    await renderSubscriptionStatus();
+    toast(`Formule détectée : ${$("subscription").selectedOptions[0].textContent}`);
+  } catch (err) {
+    $("subscription-status").textContent = `Non détectée : ${err}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
+listen("settings-updated", (event) => {
+  renderSettings(event.payload);
+  renderSubscriptionStatus();
+});
+
+// ---------- Sauvegarde (N10) ----------
+
+$("export-backup").addEventListener("click", async () => {
+  try {
+    const path = await invoke("export_backup");
+    if (path) toast(`Sauvegarde enregistrée : ${path}`);
+  } catch (err) {
+    toast(`Sauvegarde impossible : ${err}`);
+  }
+});
+
+$("import-backup").addEventListener("click", async () => {
+  try {
+    if (await invoke("import_backup")) {
+      toast("Sauvegarde restaurée.");
+      // Tout l'état a changé : l'interface repart de zéro.
+      setTimeout(() => location.reload(), 800);
+    }
+  } catch (err) {
+    toast(`Restauration impossible : ${err}`);
+  }
+});
+
+// ---------- Jours joués détectés (N5) ----------
+
+listen("xbox-progress-updated", (event) => renderXbox(event.payload));
 
 $("open-logs").addEventListener("click", () => invoke("open_logs").catch((err) => toast(String(err))));
 
@@ -1312,6 +1407,7 @@ listen("check-update-requested", () => {
   $("version-line").textContent = `Version ${info.version}`;
   $("current-version").textContent = info.version;
   renderSettings(settings);
+  renderSubscriptionStatus();
   $("autostart").checked = autostart;
   renderXbox(xbox);
   renderFollowed();

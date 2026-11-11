@@ -273,3 +273,5 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .week-days .day[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .week-days .day:disabled { opacity: .45; cursor: default; }
 .week-days .day:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.level-risk { color: var(--warn); font-weight: 600; }
+.subhead { font: 600 15px var(--font-display); margin: 18px 0 8px; }

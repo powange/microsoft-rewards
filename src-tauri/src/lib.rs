@@ -1,6 +1,7 @@
 mod auth;
 mod catalog;
 mod flight;
+mod gamepass;
 mod mini;
 mod reminders;
 mod rewards;
@@ -465,6 +466,73 @@ fn stop_guided(app: AppHandle) {
     auth::stop_guide(&app);
 }
 
+/// Enregistre une sauvegarde à l'endroit choisi. `Ok(None)` : l'utilisateur a annulé.
+#[tauri::command]
+async fn export_backup(app: AppHandle) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let name = format!(
+        "RewardsAutoplay-sauvegarde-{}.json",
+        chrono::Local::now().format("%Y-%m-%d")
+    );
+    let handle = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .dialog()
+            .file()
+            .set_title("Enregistrer une sauvegarde de Rewards Autoplay")
+            .set_file_name(name)
+            .add_filter("Sauvegarde Rewards Autoplay", &["json"])
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(path) = picked.and_then(|p| p.into_path().ok()) else {
+        return Ok(None);
+    };
+    let text = app.state::<AppState>().store.export_json();
+    std::fs::write(&path, text).map_err(|e| format!("écriture impossible : {e}"))?;
+    Ok(Some(path.display().to_string()))
+}
+
+/// Restaure une sauvegarde choisie par l'utilisateur. `Ok(false)` : annulé.
+#[tauri::command]
+async fn import_backup(app: AppHandle) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let handle = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        handle
+            .dialog()
+            .file()
+            .set_title("Restaurer une sauvegarde de Rewards Autoplay")
+            .add_filter("Sauvegarde Rewards Autoplay", &["json"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(path) = picked.and_then(|p| p.into_path().ok()) else {
+        return Ok(false);
+    };
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("lecture impossible : {e}"))?;
+    app.state::<AppState>().store.import_json(&text)?;
+    Ok(true)
+}
+
+/// Détecte la formule Game Pass sur la page du compte Microsoft (fenêtre visible, pour
+/// pouvoir s'y reconnecter si Microsoft le demande). Renvoie les réglages à jour.
+#[tauri::command]
+async fn detect_subscription(app: AppHandle) -> Result<Settings, String> {
+    gamepass::detect(&app, true).await?;
+    let settings = app.state::<AppState>().store.settings();
+    let _ = app.emit("settings-updated", &settings);
+    Ok(settings)
+}
+
+/// Date de la dernière détection réussie de la formule Game Pass.
+#[tauri::command]
+fn subscription_checked(state: State<AppState>) -> Option<chrono::NaiveDate> {
+    state.store.subscription_checked()
+}
+
 #[tauri::command]
 fn get_goal(state: State<AppState>) -> Option<store::Goal> {
     state.store.goal()
@@ -598,6 +666,8 @@ async fn xbox_rewards(app: AppHandle, force: bool) -> Result<xbox::XboxRewards, 
             return Ok(rewards);
         }
     }
+    // Les jours joués sont relus en même temps que les quêtes.
+    xbox::sync_played_days(&app).await;
     xbox::refresh(&app).await.map_err(|e| e.to_string())
 }
 
@@ -737,6 +807,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let state_file = app.path().app_data_dir()?.join("state.json");
@@ -813,6 +884,10 @@ pub fn run() {
             open_main,
             start_guided,
             stop_guided,
+            export_backup,
+            import_backup,
+            detect_subscription,
+            subscription_checked,
             hide_mini,
         ])
         .run(tauri::generate_context!())

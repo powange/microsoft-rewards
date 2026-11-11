@@ -128,7 +128,9 @@
                 </div>
               </div>
             </div>
-            <p class="muted small">Suivi manuel : sans connexion Xbox Live, l'avancement repose sur ce que vous cochez ici. Les points se réclament dans le Rewards Hub de l'app Xbox.</p>
+            <p class="muted small" id="xbox-sync-note"></p>
+            <label class="check small"><input type="checkbox" id="auto-xbox-days"> Cocher les jours joués d'après l'historique des jeux Xbox Live (compte Xbox Live connecté)</label>
+            <p class="muted small">Suivi manuel : l'avancement repose sur les jours cochés ici. Les points se réclament dans le Rewards Hub de l'app Xbox.</p>
             </div>
           </article>
 
@@ -222,6 +224,10 @@
             <span></span>
             <label class="check"><input type="checkbox" id="remind-streaks"> Séries dont l'étape du jour n'est pas faite (un jour manqué remet la série à zéro)</label>
             <span></span>
+            <label class="check"><input type="checkbox" id="notify-level"> Prévenir dans les trois derniers jours du mois si les points du mois ne suffisent pas à garder le niveau</label>
+            <span></span>
+            <label class="check"><input type="checkbox" id="weekly-summary"> Bilan de la semaine le dimanche soir (points gagnés, comparaison avec la semaine précédente)</label>
+            <span></span>
             <label class="check"><input type="checkbox" id="remind-streaks-evening"> Second rappel le soir pour les séries pas encore faites, à <input type="time" id="streak-reminder-time" class="inline-time"></label>
             <span></span>
             <label class="check"><input type="checkbox" id="notify-unlocks"> Prévenir dès qu'une tâche verrouillée se déverrouille (étape de quête, activité)</label>
@@ -254,8 +260,10 @@
               <option value="ultimate">Ultimate (×4, packs mensuels)</option>
               <option value="pcGamePass">PC Game Pass</option>
             </select>
+            <span></span>
+            <div><button class="btn" id="detect-subscription" type="button">Détecter ma formule</button> <span class="muted small" id="subscription-status"></span></div>
           </div>
-          <p class="muted small">Sert à afficher les quêtes auxquelles votre formule donne accès.</p>
+          <p class="muted small">Sert à afficher les quêtes auxquelles votre formule donne accès. La formule est relue chaque semaine sur la page « Services et abonnements » de votre compte Microsoft ; le bouton ouvre cette page, où vous pouvez vous reconnecter si Microsoft le demande.</p>
         </article>
 
         <article class="panel">
@@ -293,6 +301,12 @@
             <button class="btn" id="logout-btn">Se déconnecter</button>
             <button class="btn" id="open-logs">Ouvrir le dossier des journaux</button>
           </div>
+          <h3 class="subhead">Sauvegarde</h3>
+          <div class="btnrow">
+            <button class="btn" id="export-backup" type="button">Enregistrer une sauvegarde…</button>
+            <button class="btn" id="import-backup" type="button">Restaurer une sauvegarde…</button>
+          </div>
+          <p class="muted small">Réglages, quêtes suivies, objectif, historique des points et suivi Xbox, dans un fichier à garder ou à copier sur un autre PC. Aucun mot de passe ni jeton n'y figure.</p>
           <p class="muted small">Le dossier des journaux contient aussi la dernière réponse brute de Microsoft Rewards, utile si l'affichage des points ne fonctionne plus.</p>
         </article>
       </section>

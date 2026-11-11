@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::Local;
+use chrono::{Datelike, Local, NaiveDate};
 use tauri::{AppHandle, Manager, Runtime};
 
 use crate::rewards::FetchError;
@@ -12,8 +12,17 @@ use crate::AppState;
 
 pub fn spawn<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
-        let _ = crate::refresh(&app).await;
+        let logged_in = crate::refresh(&app).await.is_ok();
         refresh_xbox(&app).await;
+        // Formule Game Pass relue une fois par semaine, discrètement.
+        if logged_in {
+            let before = app.state::<AppState>().store.settings().subscription;
+            crate::gamepass::detect_weekly(&app).await;
+            let settings = app.state::<AppState>().store.settings();
+            if settings.subscription != before {
+                let _ = tauri::Emitter::emit(&app, "settings-updated", &settings);
+            }
+        }
         let mut last_update_check: Option<Instant> = None;
         let mut ticker = tokio::time::interval(Duration::from_secs(60));
         loop {
@@ -34,6 +43,8 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>) {
             }
             maybe_remind(&app, &settings).await;
             maybe_remind_streaks(&app, &settings).await;
+            maybe_level_alert(&app, &settings);
+            maybe_weekly_summary(&app, &settings);
         }
     });
 }
@@ -42,6 +53,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>) {
 async fn refresh_xbox<R: Runtime>(app: &AppHandle<R>) {
     if crate::xbox::status(app).connected {
         let _ = crate::xbox::refresh(app).await;
+        crate::xbox::sync_played_days(app).await;
     }
 }
 
@@ -114,6 +126,138 @@ async fn maybe_remind_streaks<R: Runtime>(app: &AppHandle<R>, settings: &Setting
             crate::ClickAction::OpenMain(Some("today")),
         );
     }
+}
+
+/// Dernier jour du mois de `day`.
+fn month_end(day: NaiveDate) -> NaiveDate {
+    let (y, m) = if day.month() == 12 {
+        (day.year() + 1, 1)
+    } else {
+        (day.year(), day.month() + 1)
+    };
+    NaiveDate::from_ymd_opt(y, m, 1).unwrap() - chrono::Duration::days(1)
+}
+
+/// Dans les trois derniers jours du mois, après l'heure du rappel : si les points du mois ne
+/// suffisent pas à garder le niveau actuel, une alerte (une par mois).
+fn maybe_level_alert<R: Runtime>(app: &AppHandle<R>, settings: &Settings) {
+    if !settings.notify_level {
+        return;
+    }
+    let now = Local::now();
+    let today = now.date_naive();
+    let end = month_end(today);
+    if (end - today).num_days() > 2 || now.time() < settings.reminder_time() {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let Some(status) = state
+        .summary
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|s| s.level_status.clone())
+    else {
+        return;
+    };
+    let Some(level) = status.levels.iter().find(|l| l.level == status.current) else {
+        return;
+    };
+    let missing = level.points - status.month_points;
+    if level.points == 0 || missing <= 0 {
+        return;
+    }
+    if !state
+        .store
+        .first_alert(&format!("niveau#{}", today.format("%Y-%m")))
+    {
+        return;
+    }
+    let name = level
+        .title
+        .clone()
+        .unwrap_or_else(|| format!("niveau {}", level.level));
+    let days = (end - today).num_days() + 1;
+    crate::notify_with(
+        app,
+        &format!("Niveau {name} en jeu"),
+        &format!(
+            "Encore {missing} points d'ici la fin du mois pour le garder ({} / {} pts, {days} jour{} restant{}).",
+            status.month_points,
+            level.points,
+            if days > 1 { "s" } else { "" },
+            if days > 1 { "s" } else { "" },
+        ),
+        crate::ClickAction::OpenMain(Some("today")),
+    );
+}
+
+/// Le dimanche soir, après 20 h : points gagnés dans la semaine et comparaison avec la
+/// précédente, séries et niveau. Une fois par semaine.
+fn maybe_weekly_summary<R: Runtime>(app: &AppHandle<R>, settings: &Settings) {
+    if !settings.weekly_summary {
+        return;
+    }
+    let now = Local::now();
+    let today = now.date_naive();
+    if today.weekday() != chrono::Weekday::Sun
+        || now.time() < chrono::NaiveTime::from_hms_opt(20, 0, 0).unwrap()
+    {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let week = today.iso_week();
+    if !state
+        .store
+        .first_alert(&format!("bilan#{}-W{:02}", week.year(), week.week()))
+    {
+        return;
+    }
+    let monday = today - chrono::Duration::days(6);
+    let gained = state.store.points_gained(monday, today);
+    let before = state.store.points_gained(
+        monday - chrono::Duration::days(7),
+        monday - chrono::Duration::days(1),
+    );
+    let mut lines = vec![if before > 0 {
+        let diff = gained - before;
+        let trend = match diff {
+            0 => "autant que la semaine précédente".to_string(),
+            d if d > 0 => format!("{d} de plus que la semaine précédente"),
+            d => format!("{} de moins que la semaine précédente", -d),
+        };
+        format!("+{gained} points cette semaine, {trend}.")
+    } else {
+        format!("+{gained} points cette semaine.")
+    }];
+    if let Some(summary) = state.summary.lock().unwrap().as_ref() {
+        if let Some(status) = &summary.level_status {
+            if let Some(next) = status.levels.iter().find(|l| l.level == status.current + 1) {
+                lines.push(format!(
+                    "Ce mois-ci : {} / {} pts pour le niveau {}.",
+                    status.month_points,
+                    next.points,
+                    next.title.clone().unwrap_or_default()
+                ));
+            }
+        }
+        let pending: Vec<_> = summary
+            .streaks
+            .streaks
+            .iter()
+            .filter(|s| !s.today_done)
+            .map(|s| s.title.clone())
+            .collect();
+        if !pending.is_empty() {
+            lines.push(format!("À faire avant minuit : {}.", pending.join(", ")));
+        }
+    }
+    crate::notify_with(
+        app,
+        "Votre semaine Microsoft Rewards",
+        &lines.join("\n"),
+        crate::ClickAction::OpenMain(Some("history")),
+    );
 }
 
 /// Calcule la liste des tâches restantes et l'envoie en notification. Renvoie les lignes envoyées.

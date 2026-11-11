@@ -187,6 +187,34 @@ pub struct RewardsSummary {
     pub streaks: Streaks,
     /// Anomalies de lecture : signe que le site a changé et que des informations manquent.
     pub warnings: Vec<String>,
+    /// Niveau et points du mois, pour suivre le maintien du niveau.
+    pub level_status: Option<LevelStatus>,
+}
+
+/// Niveau Rewards : il dépend des points gagnés chaque mois (Argent à 500, Or à 750 et
+/// quelques activités de montée en niveau).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LevelStatus {
+    /// 1 (Base), 2 (Argent), 3 (Or).
+    pub current: u8,
+    /// « Adhérent Argent ».
+    pub name: Option<String>,
+    /// Points gagnés ce mois-ci.
+    pub month_points: i64,
+    /// Seuils de chaque niveau, du plus bas au plus haut.
+    pub levels: Vec<LevelRequirement>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LevelRequirement {
+    pub level: u8,
+    /// « Argent », « Or ».
+    pub title: Option<String>,
+    pub points: i64,
+    /// Activités de montée en niveau exigées en plus des points.
+    pub activities: Option<i64>,
 }
 
 impl RewardsSummary {
@@ -567,7 +595,13 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
     let dashboard = dashboard_html.map(flight::text).unwrap_or_default();
 
     let available_points = first_int(&earn, "balance").ok_or(FetchError::NotLoggedIn)?;
-    let level = first_str(&dashboard, "memberTitle").or_else(|| first_str(&earn, "memberTitle"));
+    let level_status = level_status(&earn, &dashboard);
+    // Nom du niveau actuel ; à défaut, l'ancien repli sur le premier nom de la page.
+    let level = level_status
+        .as_ref()
+        .and_then(|l| l.name.clone())
+        .or_else(|| first_str(&dashboard, "memberTitle"))
+        .or_else(|| first_str(&earn, "memberTitle"));
     let level_progress = first_int(&dashboard, "pointsProgress");
     let level_progress_max = level_progress
         .zip(first_int(&dashboard, "pointsRemaining"))
@@ -619,6 +653,7 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
         },
         streaks: streaks::parse(&earn),
         warnings: Vec::new(),
+        level_status,
     };
     summary.warnings = consistency_warnings(&summary, &earn);
     summary.classify_tasks();
@@ -659,6 +694,53 @@ fn consistency_warnings(summary: &RewardsSummary, earn: &str) -> Vec<String> {
         warnings.push("les quêtes".to_string());
     }
     warnings
+}
+
+/// Niveau actuel (`{"balance":…,"level":2}`), noms des niveaux (`"Level2":{"memberTitle":…,
+/// "title":…}`), points du mois (`pointsProgress`) et seuils (`levelRequirements`).
+fn level_status(earn: &str, dashboard: &str) -> Option<LevelStatus> {
+    let current = [dashboard, earn].iter().find_map(|text| {
+        flight::objects_with_key(text, "balance")
+            .iter()
+            .find_map(|o| o.get("level").and_then(as_int))
+    })?;
+    let names = |n: i64| {
+        [dashboard, earn].iter().find_map(|text| {
+            flight::values_after_key(text, &format!("Level{n}"))
+                .into_iter()
+                .find_map(|v| {
+                    let member = v.get("memberTitle")?.as_str()?.to_string();
+                    let title = v.get("title").and_then(Value::as_str).map(str::to_string);
+                    Some((member, title))
+                })
+        })
+    };
+    let requirements = flight::values_after_key(dashboard, "levelRequirements")
+        .into_iter()
+        .find(Value::is_object);
+    let mut levels = Vec::new();
+    for n in 1..=3i64 {
+        let key = n.to_string();
+        let points = requirements
+            .as_ref()
+            .and_then(|r| r.get("points")?.get(&key).and_then(as_int))
+            .unwrap_or(0);
+        let activities = requirements
+            .as_ref()
+            .and_then(|r| r.get("activities")?.get(&key).and_then(as_int));
+        levels.push(LevelRequirement {
+            level: n as u8,
+            title: names(n).and_then(|(_, title)| title),
+            points,
+            activities,
+        });
+    }
+    Some(LevelStatus {
+        current: current.clamp(1, 3) as u8,
+        name: names(current).map(|(member, _)| member),
+        month_points: first_int(dashboard, "pointsProgress").unwrap_or(0),
+        levels,
+    })
 }
 
 /// Nom du compte : composant d'en-tête `{"name":"…","profilePictureUrl":"…"}`.

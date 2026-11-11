@@ -33,6 +33,9 @@ const REDIRECT_URL: &str = "https://login.microsoftonline.com/common/oauth2/nati
 const SCOPE: &str = "XboxLive.signin offline_access";
 const USER_AUTH_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
+/// Historique des jeux du compte (service « titlehub », distinct de celui des quêtes).
+const TITLE_HISTORY_URL: &str =
+    "https://titlehub.xboxlive.com/users/xuid({xuid})/titles/titlehistory/decoration/detail";
 const PROGRAM_INFO_URL: &str = "https://xgrant.xboxlive.com/users/xuid({xuid})/programInfo\
     ?filter=profile,catalog,activities,spotlights";
 const LOGIN_LABEL: &str = "xbox-login";
@@ -82,6 +85,27 @@ const REFUSED_PAUSE: std::time::Duration = std::time::Duration::from_secs(24 * 3
 pub struct XboxStatus {
     pub connected: bool,
     pub gamertag: Option<String>,
+    /// Résultat de la dernière détection des jours joués (historique des jeux).
+    pub played_sync: Option<String>,
+}
+
+/// Dernière détection des jours joués : moment et résultat (nombre de jeux lus, ou erreur).
+/// Moment d'une lecture de l'historique et nombre de jeux lus, ou l'erreur rencontrée.
+type PlayedSync = (DateTime<Local>, Result<usize, String>);
+static PLAYED_SYNC: Mutex<Option<PlayedSync>> = Mutex::new(None);
+
+fn played_sync_message() -> Option<String> {
+    let sync = PLAYED_SYNC.lock().unwrap();
+    let (at, result) = sync.as_ref()?;
+    let at = at.format("%H:%M");
+    Some(match result {
+        Ok(_) => {
+            format!("Jours joués détectés depuis l'historique des jeux Xbox Live (lu à {at}).")
+        }
+        Err(err) => {
+            format!("Historique des jeux Xbox Live illisible ({err}) : cochez les jours vous-même.")
+        }
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -193,6 +217,7 @@ pub fn open_login<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
                         if let Err(err) = refresh(&app).await {
                             let _ = app.emit("xbox-error", err.to_string());
                         }
+                        sync_played_days(&app).await;
                     }
                     Err(err) => {
                         log::warn!("Connexion Xbox Live impossible : {err}");
@@ -245,6 +270,7 @@ async fn finish_login<R: Runtime>(app: &AppHandle<R>, url: &Url) -> Result<XboxS
     let status = XboxStatus {
         connected: true,
         gamertag: token.gamertag.clone(),
+        played_sync: None,
     };
     *state.xbox.token.lock().unwrap() = Some(token);
     Ok(status)
@@ -273,6 +299,7 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> XboxStatus {
     XboxStatus {
         connected: gamertag.is_some() || has_refresh_token(),
         gamertag,
+        played_sync: played_sync_message(),
     }
 }
 
@@ -431,6 +458,116 @@ async fn valid_token<R: Runtime>(app: &AppHandle<R>) -> Result<XboxToken, XboxEr
     let token = xbox_live_token(&client, &tokens.access_token).await?;
     *state.xbox.token.lock().unwrap() = Some(token.clone());
     Ok(token)
+}
+
+// ---------- Jours joués ----------
+
+/// Jeu de l'historique Xbox Live : nom, dernière partie et appareils.
+#[derive(Debug, Clone)]
+pub struct PlayedTitle {
+    pub name: String,
+    pub last_played: DateTime<Utc>,
+    pub devices: Vec<String>,
+}
+
+/// Historique des jeux du compte. Il ne donne que la dernière partie de chaque jeu : les
+/// jours joués se reconstituent donc au fil des lectures.
+async fn title_history<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<PlayedTitle>, XboxError> {
+    let token = valid_token(app).await?;
+    let client = app.state::<AppState>().http.clone();
+    let response = client
+        .get(TITLE_HISTORY_URL.replace("{xuid}", &token.xuid))
+        .header(
+            "Authorization",
+            format!("XBL3.0 x={};{}", token.uhs, token.token),
+        )
+        .header("x-xbl-contract-version", "2")
+        .header("Accept", "application/json")
+        .header("Accept-Language", "fr-FR")
+        .send()
+        .await
+        .map_err(|e| XboxError::Network(e.to_string()))?;
+    let status = response.status();
+    if status.as_u16() == 401 || status.as_u16() == 403 {
+        return Err(XboxError::Refused(format!("titlehub : HTTP {status}")));
+    }
+    if !status.is_success() {
+        return Err(XboxError::Unexpected(format!("titlehub : HTTP {status}")));
+    }
+    let json: Value = response
+        .json()
+        .await
+        .map_err(|e| XboxError::Unexpected(e.to_string()))?;
+    Ok(parse_title_history(&json))
+}
+
+fn parse_title_history(json: &Value) -> Vec<PlayedTitle> {
+    json.get("titles")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|t| t.get("type").and_then(Value::as_str).unwrap_or("Game") == "Game")
+        .filter_map(|t| {
+            let name = t.get("name")?.as_str()?.to_string();
+            let last_played = t
+                .get("titleHistory")?
+                .get("lastTimePlayed")?
+                .as_str()
+                .and_then(|d| DateTime::parse_from_rfc3339(d).ok())?
+                .with_timezone(&Utc);
+            let devices = t
+                .get("devices")
+                .and_then(Value::as_array)
+                .map(|d| {
+                    d.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(PlayedTitle {
+                name,
+                last_played,
+                devices,
+            })
+        })
+        .collect()
+}
+
+/// Coche dans le suivi manuel les jours où un jeu PC a été lancé cette semaine ou ce mois-ci,
+/// d'après l'historique des jeux. Renvoie `true` si le suivi a changé.
+pub async fn sync_played_days<R: Runtime>(app: &AppHandle<R>) -> bool {
+    if !status(app).connected || !app.state::<AppState>().store.settings().auto_xbox_days {
+        return false;
+    }
+    let result = title_history(app).await;
+    let mut changed = false;
+    if let Ok(titles) = &result {
+        let store = &app.state::<AppState>().store;
+        let today = Local::now().date_naive();
+        for title in titles {
+            let pc =
+                title.devices.is_empty() || title.devices.iter().any(|d| d == "PC" || d == "Win32");
+            let day = title.last_played.with_timezone(&Local).date_naive();
+            let recent = (today - day).num_days() < 31;
+            if pc && recent {
+                changed |= store.record_played(day, &title.name);
+            }
+        }
+    }
+    if let Err(err) = &result {
+        log::warn!("Historique des jeux Xbox Live illisible : {err}");
+    }
+    *PLAYED_SYNC.lock().unwrap() = Some((
+        Local::now(),
+        result.map(|t| t.len()).map_err(|e| e.to_string()),
+    ));
+    if changed {
+        let _ = app.emit(
+            "xbox-progress-updated",
+            app.state::<AppState>().store.xbox_progress(),
+        );
+    }
+    changed
 }
 
 // ---------- Quêtes ----------
@@ -769,5 +906,20 @@ mod tests {
             let rewards = parse_program_info(&serde_json::from_str(body).unwrap());
             assert!(rewards.missions.is_empty());
         }
+    }
+
+    #[test]
+    fn lit_l_historique_des_jeux() {
+        let json = serde_json::json!({"titles": [
+            {"name": "Sea of Thieves", "type": "Game", "devices": ["PC", "XboxSeries"],
+             "titleHistory": {"lastTimePlayed": "2026-11-10T19:12:33.123Z"}},
+            {"name": "Paramètres", "type": "App", "devices": ["PC"],
+             "titleHistory": {"lastTimePlayed": "2026-11-10T19:12:33Z"}},
+            {"name": "Sans date", "type": "Game"}
+        ]});
+        let titles = parse_title_history(&json);
+        assert_eq!(titles.len(), 1);
+        assert_eq!(titles[0].name, "Sea of Thieves");
+        assert_eq!(titles[0].devices, vec!["PC", "XboxSeries"]);
     }
 }
