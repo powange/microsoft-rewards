@@ -78,11 +78,30 @@ const CLICK_SCRIPT: &str = r#"(() => {
     } catch { return ""; }
   };
   const want = norm(target);
+  // Repli : même page de destination et même requête `q`, quand les autres paramètres du
+  // lien ont changé entre l'actualisation et l'affichage de la page.
+  const loose = (u) => {
+    try {
+      const x = new URL(u, location.href);
+      return (x.host.replace(/^www\./, "") + x.pathname.replace(/\/$/, "") + "?"
+        + (x.searchParams.get("q") || "")).toLowerCase();
+    } catch { return ""; }
+  };
+  const wantLoose = (() => {
+    try { return new URL(target).searchParams.get("q") ? loose(target) : null; } catch { return null; }
+  })();
   const props = (el) => {
     const key = Object.keys(el).find((k) => k.startsWith("__reactProps"));
     return key ? el[key] : null;
   };
-  const find = () => {
+  const find = () => exact() || looseMatch();
+  const looseMatch = () => {
+    if (!wantLoose) return null;
+    const hits = [...document.querySelectorAll("a[href]")]
+      .filter((el) => loose(el.getAttribute("href")) === wantLoose);
+    return hits.length === 1 ? { el: hits[0], ready: Boolean(props(hits[0])) } : null;
+  };
+  const exact = () => {
     for (const el of document.querySelectorAll("a[href], button, [role=button], [role=link]")) {
       const p = props(el);
       const link = el.getAttribute("href") || (p && (p.href || p.destination));

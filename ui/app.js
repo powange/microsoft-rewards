@@ -73,6 +73,12 @@ function openUrl(url) {
 /** Délai avant l'actualisation qui suit une page ouverte dans la fenêtre Rewards. */
 const TASK_REFRESH_DELAY_MS = 10_000;
 const EARN_URL = "https://rewards.bing.com/earn";
+/**
+ * Les activités du jour (« Ensemble du jour », série quotidienne) ne sont affichées comme des
+ * liens que sur le tableau de bord : sur la page Gagner, elles sont cachées dans le panneau de
+ * la série. C'est donc sur le tableau de bord qu'on clique dessus.
+ */
+const DAILY_URL = "https://rewards.bing.com/dashboard?section=dailyset";
 /** Les recherches libres se font dans la fenêtre connectée au compte, pour être comptées. */
 const BING_URL = "https://www.bing.com/";
 let taskRefreshTimer;
@@ -119,9 +125,14 @@ function kindTag(kind) {
 
 const isSearch = (kind) => kind === "search" || kind === "searchManual";
 
+/** Page du site où se trouve l'activité : tableau de bord pour celles du jour, sinon page Gagner. */
+function activityPage(activity) {
+  return state.summary?.dailySet.some((a) => a.id === activity.id) ? DAILY_URL : EARN_URL;
+}
+
 function activityItem(activity) {
   const title = activity.url
-    ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(EARN_URL, activity.complete || activity.locked ? null : activity.url); } }, activity.title)
+    ? h("a", { href: "#", onclick: (e) => { e.preventDefault(); openTask(activityPage(activity), activity.complete || activity.locked ? null : activity.url); } }, activity.title)
     : activity.title;
   return h("li", { class: activity.complete ? "done" : "" },
     h("span", { class: `state${activity.complete ? " done" : ""}`, "aria-label": activity.complete ? "Terminé" : "À faire" }),
@@ -204,7 +215,7 @@ function renderSearchesToDo(summary) {
   const pending = (t) => !t.complete && !t.locked && isSearch(t.kind);
   const tasks = [
     ...[...summary.dailySet, ...summary.more].filter(pending).map((a) => ({
-      kind: a.kind, title: a.title, context: a.description, points: a.points, imageUrl: a.imageUrl, url: EARN_URL, click: a.url,
+      kind: a.kind, title: a.title, context: a.description, points: a.points, imageUrl: a.imageUrl, url: activityPage(a), click: a.url,
     })),
     ...summary.punchCards.flatMap((card) => card.steps.filter(pending).map((step) => ({
       kind: step.kind, title: step.title, context: `Quête : ${card.title}`, points: 0, imageUrl: card.imageUrl, url: card.url ?? step.url, click: card.url ? step.url : null,
