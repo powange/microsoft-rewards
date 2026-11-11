@@ -1,5 +1,7 @@
 //! Mise à jour depuis les GitHub Releases, vérifiée par la signature de l'updater Tauri.
 
+use std::sync::Mutex;
+
 use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -29,11 +31,53 @@ pub async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<Option<UpdateInfo>,
     }))
 }
 
+/// Manifeste lu par l'updater (même adresse que `plugins.updater.endpoints`).
+const MANIFEST_URL: &str =
+    "https://github.com/powange/microsoft-rewards/releases/latest/download/latest.json";
+
+/// ETag de la dernière lecture du manifeste.
+static MANIFEST_ETAG: Mutex<Option<String>> = Mutex::new(None);
+
+/// Lecture légère avant la vérification complète, qui peut tourner chaque minute : requête
+/// conditionnelle (ETag), puis comparaison de la version annoncée. En cas de doute (réseau,
+/// format inattendu), la vérification complète a lieu.
+async fn manifest_announces_new_version<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let client = app.state::<crate::AppState>().http.clone();
+    let mut request = client.get(MANIFEST_URL);
+    if let Some(etag) = MANIFEST_ETAG.lock().unwrap().clone() {
+        request = request.header(reqwest::header::IF_NONE_MATCH, etag);
+    }
+    let Ok(response) = request.send().await else {
+        return true;
+    };
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return false;
+    }
+    if !response.status().is_success() {
+        return true;
+    }
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let version = response
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|json| json.get("version")?.as_str().map(str::to_string));
+    *MANIFEST_ETAG.lock().unwrap() = etag;
+    version.is_none_or(|v| v != app.package_info().version.to_string())
+}
+
 /// Vérification périodique.
 ///
 /// Avec `auto_install`, une mise à jour trouvée est installée tout de suite, puis
 /// l'application redémarre. Sinon, l'utilisateur est prévenu une seule fois par version.
 pub async fn background_check<R: Runtime>(app: &AppHandle<R>, auto_install: bool) {
+    if !manifest_announces_new_version(app).await {
+        return;
+    }
     let info = match check(app).await {
         Ok(Some(info)) => info,
         Ok(None) => return,

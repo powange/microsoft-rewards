@@ -57,6 +57,16 @@ jobs:
     - name: Tests
       run: cargo test --workspace
 
+    # Known vulnerabilities in dependencies (RustSec). Reported without blocking a release:
+    # most advisories come from transitive dependencies that only an upstream update fixes.
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-audit
+
+    - name: Security audit
+      continue-on-error: true
+      run: cargo audit
+
   # Builds on main and pull requests: an installer to try, without updater signature.
   # On main it also fills the release-build cache that tag builds restore.
   bundle:

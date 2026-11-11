@@ -6,7 +6,9 @@
 //! Ces pages sont rendues par Next.js : leurs données sont lues dans le flux intégré au HTML
 //! (voir [`crate::flight`]). Ce format n'est pas documenté et peut changer.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
 use serde::Serialize;
@@ -122,7 +124,7 @@ pub struct Step {
 }
 
 /// Contenu de la page d'une quête.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct QuestPage {
     title: Option<String>,
     description: Option<String>,
@@ -284,28 +286,50 @@ pub async fn fetch<R: Runtime>(
             None
         }
     };
-    let mut summary = parse(&earn, dashboard.as_deref())?;
+    let mut summary = match parse(&earn, dashboard.as_deref()) {
+        Ok(summary) => summary,
+        Err(err) => {
+            // Page inattendue : on la garde pour comprendre ce qui a changé côté Microsoft.
+            save_diagnostic_now(app, "earn", &earn);
+            return Err(err);
+        }
+    };
 
-    // Les étapes de chaque quête ne figurent que sur la page de la quête.
+    // Les étapes de chaque quête ne figurent que sur la page de la quête. Une page lue
+    // récemment est reprise si l'avancement affiché sur /earn n'a pas bougé.
     let pages: Vec<_> = summary
         .punch_cards
         .iter()
         .map(|card| {
+            if let Some(page) = cached_quest(card) {
+                return QuestSource::Cached(page);
+            }
             let client = client.clone();
             let cookie = cookie.clone();
             let url = card.url.clone();
-            tauri::async_runtime::spawn(async move {
+            QuestSource::Fetch(tauri::async_runtime::spawn(async move {
                 match url {
-                    Some(url) => get(&client, &cookie, &url).await.map(|(html, _)| html),
+                    Some(url) => get(&client, &cookie, &url)
+                        .await
+                        .map(|(html, _)| quest_page(&html)),
                     None => Err(FetchError::Unexpected("quête sans adresse".into())),
                 }
-            })
+            }))
         })
         .collect();
-    for (card, page) in summary.punch_cards.iter_mut().zip(pages) {
-        match page.await {
-            Ok(Ok(html)) => {
-                let page = quest_page(&html);
+    for (card, source) in summary.punch_cards.iter_mut().zip(pages) {
+        let page = match source {
+            QuestSource::Cached(page) => Ok(Ok(page)),
+            QuestSource::Fetch(task) => {
+                let page = task.await;
+                if let Ok(Ok(page)) = &page {
+                    remember_quest(card, page.clone());
+                }
+                page
+            }
+        };
+        match page {
+            Ok(Ok(page)) => {
                 if let Some(title) = page.title {
                     card.title = title;
                 }
@@ -359,7 +383,75 @@ async fn get(
 }
 
 /// Garde la dernière page lue pour diagnostiquer un changement de format côté Microsoft.
+/// Page de quête à relire, ou reprise de la dernière lecture.
+enum QuestSource {
+    Cached(QuestPage),
+    Fetch(tauri::async_runtime::JoinHandle<Result<QuestPage, FetchError>>),
+}
+
+/// Au-delà, une page de quête est relue même si son avancement n'a pas changé, pour voir les
+/// étapes qui se déverrouillent avec le temps.
+const QUEST_MAX_AGE: Duration = Duration::from_secs(3600);
+
+struct CachedQuest {
+    fetched: Instant,
+    /// Avancement affiché sur /earn lors de la lecture (« 2/4 tâches »).
+    progress: (usize, usize),
+    page: QuestPage,
+}
+
+static QUEST_CACHE: Mutex<Option<HashMap<String, CachedQuest>>> = Mutex::new(None);
+
+fn cached_quest(card: &PunchCard) -> Option<QuestPage> {
+    // Quête venue d'une bannière : /earn n'affiche pas son avancement, on la relit toujours.
+    if card.total == 0 {
+        return None;
+    }
+    let cache = QUEST_CACHE.lock().unwrap();
+    let cached = cache.as_ref()?.get(&card.id)?;
+    (cached.fetched.elapsed() < QUEST_MAX_AGE && cached.progress == (card.done, card.total))
+        .then(|| cached.page.clone())
+}
+
+fn remember_quest(card: &PunchCard, page: QuestPage) {
+    QUEST_CACHE
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(
+            card.id.clone(),
+            CachedQuest {
+                fetched: Instant::now(),
+                progress: (card.done, card.total),
+                page,
+            },
+        );
+}
+
+/// Actualisation demandée par l'utilisateur : toutes les pages de quête sont relues.
+pub fn forget_quest_pages() {
+    *QUEST_CACHE.lock().unwrap() = None;
+}
+
+/// Une copie par heure suffit pour diagnostiquer : inutile de réécrire près d'1 Mo à chaque
+/// actualisation.
+const DIAGNOSTIC_EVERY: Duration = Duration::from_secs(3600);
+static DIAGNOSTICS_SAVED: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
 fn save_diagnostic<R: Runtime>(app: &AppHandle<R>, name: &str, html: &str) {
+    let mut saved = DIAGNOSTICS_SAVED.lock().unwrap();
+    let saved = saved.get_or_insert_with(HashMap::new);
+    if saved
+        .get(name)
+        .is_some_and(|at| at.elapsed() < DIAGNOSTIC_EVERY)
+    {
+        return;
+    }
+    saved.insert(name.to_string(), Instant::now());
+    save_diagnostic_now(app, name, html);
+}
+
+fn save_diagnostic_now<R: Runtime>(app: &AppHandle<R>, name: &str, html: &str) {
     if let Ok(dir) = app.path().app_log_dir() {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::write(dir.join(format!("rewards-{name}.html")), html);
@@ -1489,5 +1581,33 @@ c:{{"UnlockCriteria":{{"newLevel2":"Niveau Argent requis","tomorrow":"Déverroui
             assert_eq!(q(consigne).as_deref(), Some(attendu));
         }
         assert_eq!(q("Activez la barre de recherche"), None);
+    }
+
+    #[test]
+    fn reprend_une_page_de_quete_tant_que_l_avancement_ne_bouge_pas() {
+        let mut card = PunchCard {
+            id: "test_cache_punchcard".into(),
+            title: "Quête".into(),
+            description: String::new(),
+            image_url: None,
+            points: 0,
+            done: 1,
+            total: 4,
+            complete: false,
+            expires_at: None,
+            url: None,
+            xbox: false,
+            steps: Vec::new(),
+        };
+        assert!(cached_quest(&card).is_none());
+        remember_quest(&card, QuestPage::default());
+        assert!(cached_quest(&card).is_some());
+        // Une étape terminée : la page est relue.
+        card.done = 2;
+        assert!(cached_quest(&card).is_none());
+        // Quête de bannière, sans avancement sur /earn : toujours relue.
+        card.total = 0;
+        remember_quest(&card, QuestPage::default());
+        assert!(cached_quest(&card).is_none());
     }
 }

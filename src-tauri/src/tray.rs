@@ -29,6 +29,7 @@ pub fn create<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             "refresh" => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    crate::rewards::forget_quest_pages();
                     let _ = crate::refresh(&app).await;
                 });
             }

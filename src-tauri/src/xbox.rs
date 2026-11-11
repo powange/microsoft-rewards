@@ -258,6 +258,7 @@ pub fn logout<R: Runtime>(app: &AppHandle<R>) {
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
         let _ = entry.delete_credential();
     }
+    *HAS_REFRESH_TOKEN.lock().unwrap() = Some(false);
 }
 
 pub fn status<R: Runtime>(app: &AppHandle<R>) -> XboxStatus {
@@ -270,9 +271,18 @@ pub fn status<R: Runtime>(app: &AppHandle<R>) -> XboxStatus {
         .as_ref()
         .and_then(|t| t.gamertag.clone());
     XboxStatus {
-        connected: gamertag.is_some() || load_refresh_token().is_some(),
+        connected: gamertag.is_some() || has_refresh_token(),
         gamertag,
     }
+}
+
+/// Présence d'un jeton enregistré, gardée en mémoire : `status()` est appelé à chaque
+/// actualisation et rappel, inutile de relire le gestionnaire d'identifiants à chaque fois.
+static HAS_REFRESH_TOKEN: Mutex<Option<bool>> = Mutex::new(None);
+
+fn has_refresh_token() -> bool {
+    let mut known = HAS_REFRESH_TOKEN.lock().unwrap();
+    *known.get_or_insert_with(|| load_refresh_token().is_some())
 }
 
 fn load_refresh_token() -> Option<String> {
@@ -286,7 +296,9 @@ fn load_refresh_token() -> Option<String> {
 fn save_refresh_token(token: &str) -> Result<(), XboxError> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
         .and_then(|entry| entry.set_password(token))
-        .map_err(|e| XboxError::Unexpected(format!("enregistrement du jeton impossible : {e}")))
+        .map_err(|e| XboxError::Unexpected(format!("enregistrement du jeton impossible : {e}")))?;
+    *HAS_REFRESH_TOKEN.lock().unwrap() = Some(true);
+    Ok(())
 }
 
 #[derive(Deserialize)]

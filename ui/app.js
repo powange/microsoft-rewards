@@ -323,8 +323,12 @@ function renderStreaks(data) {
 
 let refreshing = false;
 
-/** Actualise tout : points, activités, séries, quêtes, et quêtes Xbox si un compte est connecté. */
-async function refresh() {
+/**
+ * Actualise tout : points, activités, séries, quêtes, et quêtes Xbox si un compte est connecté.
+ * `force` (boutons Actualiser) relit aussi les pages de quête et le service Xbox, que les
+ * actualisations automatiques reprennent de leur dernière lecture quand rien n'a changé.
+ */
+async function refresh({ force = false } = {}) {
   if (refreshing) return;
   refreshing = true;
   clearTimeout(taskRefreshTimer);
@@ -332,7 +336,7 @@ async function refresh() {
   for (const button of buttons) button.disabled = true;
   $("side-refresh").textContent = "Actualisation…";
   try {
-    const summary = await invoke("refresh_rewards");
+    const summary = await invoke("refresh_rewards", { force });
     if (isNewSummary(summary)) renderSummary(summary);
     setLoggedIn(true);
   } catch (err) {
@@ -343,17 +347,17 @@ async function refresh() {
       $("fetch-error").hidden = false;
     }
   } finally {
-    if (xboxLive.status.connected) await loadXbox(true);
+    if (xboxLive.status.connected) await loadXbox(force);
     for (const button of buttons) button.disabled = false;
     $("side-refresh").textContent = "↻ Actualiser";
     refreshing = false;
   }
 }
 
-$("refresh-btn").addEventListener("click", refresh);
+$("refresh-btn").addEventListener("click", () => refresh({ force: true }));
 // L'encart « Prêt à réclamer » est en haut du tableau de bord Rewards.
 $("claim").addEventListener("click", () => openTask("https://rewards.bing.com/dashboard"));
-$("side-refresh").addEventListener("click", refresh);
+$("side-refresh").addEventListener("click", () => refresh({ force: true }));
 $("login-btn").addEventListener("click", async () => {
   try {
     await invoke("login");

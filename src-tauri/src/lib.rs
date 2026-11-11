@@ -155,7 +155,10 @@ fn notify_unlocked_tasks<R: Runtime>(app: &AppHandle<R>, summary: &RewardsSummar
 }
 
 #[tauri::command]
-async fn refresh_rewards(app: AppHandle) -> Result<RewardsSummary, String> {
+async fn refresh_rewards(app: AppHandle, force: Option<bool>) -> Result<RewardsSummary, String> {
+    if force.unwrap_or(false) {
+        rewards::forget_quest_pages();
+    }
     refresh(&app).await.map_err(|e| e.to_string())
 }
 
