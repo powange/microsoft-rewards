@@ -145,6 +145,9 @@ const KIND_TAGS = {
   puzzle: ["🧩 Puzzle", "Puzzle d'images à terminer sur Bing."],
   partner: ["Site partenaire", "La tâche se fait sur le site d'un partenaire."],
   edgeSetting: ["Réglage Edge", "La tâche se fait dans le navigateur Edge (barre de recherche, moteur par défaut…)."],
+  rewardsApp: ["Application Rewards", "À faire dans l'application Microsoft Rewards pour Windows : ces activités n'y sont proposées qu'à elle."],
+  redeem: ["Échange", "Mène au catalogue d'échange de points."],
+  referral: ["Parrainage", "Points gagnés quand des amis invités font des recherches sur Bing."],
 };
 
 function kindTag(kind) {
@@ -175,6 +178,21 @@ function activityItem(activity) {
     h("span", { class: "pts" }, activity.points ? `${activity.points} pts` : ""));
 }
 
+/** Lecture incomplète : le site a probablement changé ; proposer de le signaler. */
+function renderSiteWarning(warnings) {
+  $("site-warning").hidden = !warnings.length;
+  if (!warnings.length) return;
+  $("site-warning-text").textContent = `Le site Microsoft Rewards semble avoir changé : ${warnings.join(", ")} n'${warnings.length > 1 ? "ont" : "a"} pas pu être lu${warnings.length > 1 ? "s" : ""}. Ces informations peuvent manquer ici ; le site reste utilisable normalement.`;
+}
+
+$("site-warning-report").addEventListener("click", () => {
+  const warnings = state.summary?.warnings ?? [];
+  const version = $("current-version").textContent;
+  const title = encodeURIComponent(`Lecture incomplète du site Rewards : ${warnings.join(", ")}`);
+  const body = encodeURIComponent(`Version : ${version}\nÉléments non lus : ${warnings.join(", ")}\nDate : ${new Date().toISOString()}\n\nLa page lue est enregistrée dans le dossier des journaux (Paramètres › Ouvrir le dossier des journaux, fichier rewards-earn.html). Elle contient le nom du compte et le solde : à anonymiser avant de la joindre.`);
+  openUrl(`https://github.com/powange/microsoft-rewards/issues/new?title=${title}&body=${body}`);
+});
+
 /** La date du jour change pendant que l'application reste des jours dans la zone de notification. */
 function renderToday() {
   $("today-date").textContent = dateFormat.format(new Date());
@@ -201,6 +219,7 @@ function renderSummary(summary) {
   $("fetched-at").textContent = `Actualisé à ${timeFormat.format(new Date(summary.fetchedAt))}`
     + (every ? ` · automatiquement toutes les ${every} min` : "");
   $("fetch-error").hidden = true;
+  renderSiteWarning(summary.warnings ?? []);
 
   const searches = $("searches");
   searches.replaceChildren(...(summary.searches.length ? summary.searches.map((c) => {
@@ -524,7 +543,16 @@ function renderXbox(progress) {
   $("xbox-undo").hidden = !progress.todayDone;
 
   $("week-count").textContent = `${progress.weekDays} / ${progress.weekTarget} jours`;
-  dots($("week-dots"), progress.weekDays, progress.weekTarget);
+  const dayName = new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+  $("week-days").replaceChildren(...progress.week.map((d) => {
+    const date = dayDate(d.date);
+    const label = dayName.format(date);
+    return h("button", {
+      class: "day", type: "button", "aria-pressed": d.played ? "true" : "false", disabled: d.future,
+      title: d.future ? `${label} : à venir` : `${label} : ${d.played ? "joué (cliquer pour retirer)" : "pas joué (cliquer pour cocher)"}`,
+      onclick: async () => renderXbox(await invoke("set_xbox_day", { date: d.date, played: !d.played })),
+    }, label.charAt(0).toUpperCase());
+  }));
 
   const games = progress.monthGames.length;
   const packs = PACK_TIERS.includes(state.settings?.subscription);
@@ -1116,6 +1144,8 @@ async function saveSettings(control) {
     notifyUnlocks: $("notify-unlocks").checked,
     notifyExpiring: $("notify-expiring").checked,
     notifyNewSearches: $("notify-new-searches").checked,
+    remindStreaksEvening: $("remind-streaks-evening").checked,
+    streakReminderTime: $("streak-reminder-time").value || "22:00",
     subscription: $("subscription").value,
     autoCheckUpdates: $("auto-update").checked,
     updateCheckIntervalMinutes: clampMinutesInput("update-interval", 1, 10080),
@@ -1141,6 +1171,8 @@ function renderSettings(settings) {
   $("notify-unlocks").checked = settings.notifyUnlocks;
   $("notify-expiring").checked = settings.notifyExpiring;
   $("notify-new-searches").checked = settings.notifyNewSearches;
+  $("remind-streaks-evening").checked = settings.remindStreaksEvening;
+  $("streak-reminder-time").value = settings.streakReminderTime;
   $("subscription").value = settings.subscription;
   $("auto-update").checked = settings.autoCheckUpdates;
   $("update-interval").value = settings.updateCheckIntervalMinutes;
@@ -1177,7 +1209,7 @@ function refreshMinutesInput() {
   return minutes;
 }
 
-for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval"]) {
+for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "remind-streaks-evening", "streak-reminder-time", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval"]) {
   $(id).addEventListener("change", () => saveSettings($(id)));
 }
 

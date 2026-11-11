@@ -59,6 +59,10 @@
           <button class="btn" id="guided-stop" type="button">Arrêter</button>
         </div>
         <div id="fetch-error" class="banner danger" hidden></div>
+        <div id="site-warning" class="banner warn" hidden>
+          <span id="site-warning-text"></span>
+          <button class="btn" id="site-warning-report" type="button">Signaler le problème ↗</button>
+        </div>
 
         <div class="grid">
           <article class="panel wide goal-panel" id="goal-panel" hidden>
@@ -113,7 +117,8 @@
                 <div class="goal">
                   <span class="label">Bonus hebdo PC</span>
                   <b id="week-count">0 / 5 jours</b>
-                  <div class="dots" id="week-dots"></div>
+                  <div class="week-days" id="week-days" role="group" aria-label="Jours joués cette semaine"></div>
+                  <span class="muted small">Cliquez sur un jour pour le cocher ou le décocher, et recaler le compteur sur l'app Xbox.</span>
                 </div>
                 <div class="goal" id="month-goal">
                   <span class="label">Packs mensuels</span>
@@ -216,6 +221,8 @@
             <label class="check"><input type="checkbox" id="remind-xbox"> Jeu Xbox du jour pas encore fait</label>
             <span></span>
             <label class="check"><input type="checkbox" id="remind-streaks"> Séries dont l'étape du jour n'est pas faite (un jour manqué remet la série à zéro)</label>
+            <span></span>
+            <label class="check"><input type="checkbox" id="remind-streaks-evening"> Second rappel le soir pour les séries pas encore faites, à <input type="time" id="streak-reminder-time" class="inline-time"></label>
             <span></span>
             <label class="check"><input type="checkbox" id="notify-unlocks"> Prévenir dès qu'une tâche verrouillée se déverrouille (étape de quête, activité)</label>
             <span></span>

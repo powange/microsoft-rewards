@@ -103,10 +103,10 @@ async fn get_page(
         .await
         .map_err(|e| FetchError::Network(e.to_string()))?;
     if !response.status().is_success() {
-        return Err(FetchError::Unexpected(format!(
-            "{url} : statut HTTP {}",
-            response.status()
-        )));
+        return Err(FetchError::Http(
+            response.status().as_u16(),
+            url.to_string(),
+        ));
     }
     response
         .text()

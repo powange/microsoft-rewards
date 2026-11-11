@@ -33,6 +33,7 @@ pub fn spawn<R: Runtime>(app: AppHandle<R>) {
                 }
             }
             maybe_remind(&app, &settings).await;
+            maybe_remind_streaks(&app, &settings).await;
         }
     });
 }
@@ -66,6 +67,53 @@ async fn maybe_remind<R: Runtime>(app: &AppHandle<R>, settings: &Settings) {
     }
     state.store.set_last_reminder(today);
     notify_lines(app, &lines);
+}
+
+/// Second rappel, le soir : seulement les séries dont l'étape du jour n'est pas faite, car un
+/// jour manqué les remet à zéro. Rien n'est envoyé si toutes sont faites.
+async fn maybe_remind_streaks<R: Runtime>(app: &AppHandle<R>, settings: &Settings) {
+    if !settings.remind_streaks_evening {
+        return;
+    }
+    let now = Local::now();
+    let today = now.date_naive();
+    let state = app.state::<AppState>();
+    if state.store.last_streak_reminder() == Some(today)
+        || now.time() < settings.streak_reminder_time()
+    {
+        return;
+    }
+    let summary = match crate::refresh(app).await {
+        Ok(summary) => summary,
+        Err(err) => {
+            // Réessayé chaque minute jusqu'à minuit ; pas connecté : rien à rappeler.
+            if matches!(err, FetchError::NotLoggedIn) {
+                state.store.set_last_streak_reminder(today);
+            }
+            return;
+        }
+    };
+    state.store.set_last_streak_reminder(today);
+    let lines: Vec<String> = summary
+        .streaks
+        .streaks
+        .iter()
+        .filter(|s| !s.today_done)
+        .map(|s| {
+            format!(
+                "{} : {} ({}/{} jours)",
+                s.title, s.today_label, s.completed_days, s.total_days
+            )
+        })
+        .collect();
+    if !lines.is_empty() {
+        crate::notify_with(
+            app,
+            "Séries à sauver avant minuit",
+            &lines.join("\n"),
+            crate::ClickAction::OpenMain(Some("today")),
+        );
+    }
 }
 
 /// Calcule la liste des tâches restantes et l'envoie en notification. Renvoie les lignes envoyées.

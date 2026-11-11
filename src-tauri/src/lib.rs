@@ -196,7 +196,12 @@ async fn refresh_now<R: Runtime>(app: &AppHandle<R>) -> Result<RewardsSummary, F
     match &result {
         Ok(summary) => {
             *state.summary.lock().unwrap() = Some(summary.clone());
-            tray::set_points(app, Some(summary.available_points));
+            tray::set_status(
+                app,
+                summary.available_points,
+                summary.tasks_left(),
+                summary.streak_pending(),
+            );
             notify_unlocked_tasks(app, summary);
             state
                 .store
@@ -551,6 +556,24 @@ fn set_xbox_today(state: State<AppState>, game: Option<String>) -> XboxProgress 
     state.store.xbox_progress()
 }
 
+/// Coche ou décoche un jour de la semaine en cours dans le suivi Xbox manuel.
+#[tauri::command]
+fn set_xbox_day(state: State<AppState>, date: chrono::NaiveDate, played: bool) -> XboxProgress {
+    // Un jour coché après coup garde le jeu déjà noté, sinon reste sans nom de jeu.
+    let game = played.then(String::new);
+    if !(played
+        && state
+            .store
+            .xbox_progress()
+            .week
+            .iter()
+            .any(|d| d.date == date && d.played))
+    {
+        state.store.set_xbox_day(date, game);
+    }
+    state.store.xbox_progress()
+}
+
 #[tauri::command]
 fn xbox_status(app: AppHandle) -> xbox::XboxStatus {
     xbox::status(&app)
@@ -767,6 +790,7 @@ pub fn run() {
             save_settings,
             xbox_progress,
             set_xbox_today,
+            set_xbox_day,
             followed_quests,
             follow_quest,
             xbox_status,

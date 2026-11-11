@@ -42,6 +42,10 @@ pub struct Settings {
     pub notify_expiring: bool,
     /// Notifier chaque nouvelle recherche Bing à faire ; un clic sur la notification la lance.
     pub notify_new_searches: bool,
+    /// Second rappel, le soir, si une série n'a pas son étape du jour.
+    pub remind_streaks_evening: bool,
+    /// Heure du rappel du soir pour les séries, au format `HH:MM`.
+    pub streak_reminder_time: String,
     pub subscription: Subscription,
     pub auto_check_updates: bool,
     /// Délai entre deux recherches de mise à jour, en minutes.
@@ -68,6 +72,8 @@ impl Default for Settings {
             notify_unlocks: true,
             notify_expiring: true,
             notify_new_searches: true,
+            remind_streaks_evening: true,
+            streak_reminder_time: "22:00".into(),
             subscription: Subscription::None,
             auto_check_updates: true,
             update_check_interval_minutes: 360,
@@ -78,6 +84,11 @@ impl Default for Settings {
 }
 
 impl Settings {
+    pub fn streak_reminder_time(&self) -> NaiveTime {
+        NaiveTime::parse_from_str(&self.streak_reminder_time, "%H:%M")
+            .unwrap_or_else(|_| NaiveTime::from_hms_opt(22, 0, 0).unwrap())
+    }
+
     pub fn reminder_time(&self) -> NaiveTime {
         NaiveTime::parse_from_str(&self.reminder_time, "%H:%M")
             .unwrap_or_else(|_| NaiveTime::from_hms_opt(19, 0, 0).unwrap())
@@ -127,6 +138,8 @@ struct Persisted {
     settings: Settings,
     xbox_sessions: BTreeMap<NaiveDate, XboxSession>,
     last_reminder: Option<NaiveDate>,
+    /// Jour du dernier rappel du soir pour les séries.
+    last_streak_reminder: Option<NaiveDate>,
     followed_quests: Vec<FollowedQuest>,
     /// Tâches verrouillées lors de la dernière actualisation, pour repérer les déverrouillages.
     locked_tasks: BTreeSet<String>,
@@ -170,6 +183,17 @@ pub struct XboxProgress {
     pub month_games: Vec<String>,
     /// Noms déjà saisis, proposés en suggestion.
     pub known_games: Vec<String>,
+    /// Les sept jours de la semaine en cours, pour cocher ou décocher un jour joué.
+    pub week: Vec<WeekDay>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WeekDay {
+    pub date: NaiveDate,
+    pub played: bool,
+    /// Jour à venir : il ne peut pas encore être coché.
+    pub future: bool,
 }
 
 pub struct Store {
@@ -266,6 +290,16 @@ impl Store {
 
     pub fn last_reminder(&self) -> Option<NaiveDate> {
         self.data.lock().unwrap().last_reminder
+    }
+
+    pub fn last_streak_reminder(&self) -> Option<NaiveDate> {
+        self.data.lock().unwrap().last_streak_reminder
+    }
+
+    pub fn set_last_streak_reminder(&self, day: NaiveDate) {
+        let mut data = self.data.lock().unwrap();
+        data.last_streak_reminder = Some(day);
+        self.save(&data);
     }
 
     pub fn set_last_reminder(&self, day: NaiveDate) {
@@ -385,7 +419,15 @@ impl Store {
 
     /// Marque (ou démarque avec `None`) la session Xbox du jour.
     pub fn set_xbox_today(&self, game: Option<String>) {
-        let today = Local::now().date_naive();
+        self.set_xbox_day(Local::now().date_naive(), game);
+    }
+
+    /// Marque (ou démarque avec `None`) un jour joué : permet de recaler le suivi sur l'app
+    /// Xbox quand un jour n'a pas été coché à temps. Les jours à venir sont ignorés.
+    pub fn set_xbox_day(&self, today: NaiveDate, game: Option<String>) {
+        if today > Local::now().date_naive() {
+            return;
+        }
         let mut data = self.data.lock().unwrap();
         match game {
             Some(game) => {
@@ -433,7 +475,19 @@ impl Store {
             .map(|s| s.game.clone())
             .collect();
 
+        let week = (0..7)
+            .map(|i| {
+                let date = week_start + chrono::Duration::days(i);
+                WeekDay {
+                    date,
+                    played: data.xbox_sessions.contains_key(&date),
+                    future: date > today,
+                }
+            })
+            .collect();
+
         XboxProgress {
+            week,
             today_done: today_game.is_some(),
             today_game,
             week_days,
@@ -532,6 +586,22 @@ mod tests {
         assert_eq!(store.swap_known_searches(BTreeSet::new()), Some(searches));
         assert!(store.first_alert("expire#sot"));
         assert!(!store.reload().first_alert("expire#sot"));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn jours_xbox_recales_apres_coup() {
+        let path =
+            std::env::temp_dir().join(format!("rewards-autoplay-xbox-{}.json", std::process::id()));
+        let store = Store::load(path.clone());
+        let today = Local::now().date_naive();
+        let monday = today - chrono::Duration::days(today.weekday().num_days_from_monday() as i64);
+        store.set_xbox_day(monday, Some(String::new()));
+        store.set_xbox_day(today + chrono::Duration::days(1), Some(String::new()));
+        let progress = store.xbox_progress();
+        assert_eq!(progress.week.len(), 7);
+        assert!(progress.week[0].played);
+        assert_eq!(progress.week_days, 1, "un jour à venir ne compte pas");
         let _ = std::fs::remove_file(path);
     }
 }

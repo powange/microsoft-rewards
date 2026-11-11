@@ -82,4 +82,5 @@ document.addEventListener("keydown", (e) => { if (e.key === "Escape") invoke("hi
 listen("rewards-updated", load);
 listen("rewards-logged-out", () => render(null, null));
 listen("mini-shown", load);
+window.addEventListener("focus", load);
 load();

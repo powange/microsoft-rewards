@@ -28,10 +28,39 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 pub enum FetchError {
     #[error("not_logged_in")]
     NotLoggedIn,
-    #[error("Erreur réseau : {0}")]
+    /// Pas de réponse (connexion Internet, délai dépassé…). Le détail va dans le journal.
+    #[error("Microsoft Rewards ne répond pas : vérifiez la connexion Internet. Nouvel essai à la prochaine actualisation. ({0})")]
     Network(String),
-    #[error("Réponse inattendue de Microsoft Rewards : {0}")]
+    /// Réponse HTTP en erreur : code et adresse.
+    #[error("{}", http_message(*.0))]
+    Http(u16, String),
+    #[error("Les pages de Microsoft Rewards n'ont pas le format attendu : {0}")]
     Unexpected(String),
+}
+
+/// Message compréhensible pour une erreur HTTP du site Rewards.
+fn http_message(code: u16) -> String {
+    match code {
+        500..=599 => format!(
+            "Microsoft Rewards rencontre un problème de son côté (erreur {code}). Nouvel essai à la prochaine actualisation."
+        ),
+        429 => "Microsoft Rewards demande de patienter (trop de demandes). Nouvel essai à la prochaine actualisation.".to_string(),
+        401 | 403 => format!(
+            "Microsoft Rewards a refusé l'accès (erreur {code}) : reconnectez-vous si le problème persiste."
+        ),
+        _ => format!("Microsoft Rewards a répondu par une erreur {code}."),
+    }
+}
+
+impl FetchError {
+    /// Erreur passagère, qui vaut un nouvel essai.
+    fn is_transient(&self) -> bool {
+        match self {
+            FetchError::Network(_) => true,
+            FetchError::Http(code, _) => *code >= 500 || *code == 429,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,6 +109,12 @@ pub enum TaskKind {
     Partner,
     /// Réglage du navigateur Edge (lien `microsoft-edge://`, barre de recherche…).
     EdgeSetting,
+    /// À faire dans l'application Microsoft Rewards pour Windows (quête hebdomadaire exclusive).
+    RewardsApp,
+    /// Page d'échange de points (`/redeem/…`).
+    Redeem,
+    /// Parrainage (`/refer`, `/referandearn`).
+    Referral,
 }
 
 impl TaskKind {
@@ -150,6 +185,8 @@ pub struct RewardsSummary {
     pub more: Vec<Activity>,
     pub punch_cards: Vec<PunchCard>,
     pub streaks: Streaks,
+    /// Anomalies de lecture : signe que le site a changé et que des informations manquent.
+    pub warnings: Vec<String>,
 }
 
 impl RewardsSummary {
@@ -180,14 +217,28 @@ impl RewardsSummary {
 
     /// Classe chaque activité et chaque étape de quête d'après son lien et son texte.
     fn classify_tasks(&mut self) {
+        // La quête hebdomadaire « exclusive » ne se fait que dans l'application Rewards pour
+        // Windows, même quand ses étapes mènent à des recherches Bing.
+        let rewards_app = |id: &str| id.to_lowercase().contains("rewardsapp");
         for a in self.daily_set.iter_mut().chain(self.more.iter_mut()) {
+            if rewards_app(&a.id) {
+                a.kind = Some(TaskKind::RewardsApp);
+                a.search_query = None;
+                continue;
+            }
             a.kind = task_kind(a.url.as_deref(), &[&a.title, &a.description]);
             a.search_query = (a.kind == Some(TaskKind::SearchManual))
                 .then(|| search_query(&[&a.description, &a.title]))
                 .flatten();
         }
         for card in &mut self.punch_cards {
+            let app_only = rewards_app(&card.id);
             for s in &mut card.steps {
+                if app_only {
+                    s.kind = Some(TaskKind::RewardsApp);
+                    s.search_query = None;
+                    continue;
+                }
                 let link = s.link_text.as_deref().unwrap_or_default();
                 s.kind = task_kind(s.url.as_deref(), &[&s.title, &s.description, link]);
                 s.search_query = (s.kind == Some(TaskKind::SearchManual))
@@ -195,6 +246,31 @@ impl RewardsSummary {
                     .flatten();
             }
         }
+    }
+
+    /// Tâches encore faisables aujourd'hui : activités qui rapportent des points et étapes de
+    /// quêtes, non verrouillées et pas terminées (hors réglages Edge).
+    pub fn tasks_left(&self) -> usize {
+        let activities = self
+            .daily_set
+            .iter()
+            .chain(&self.more)
+            .filter(|a| {
+                !a.complete && !a.locked && a.points > 0 && a.kind != Some(TaskKind::EdgeSetting)
+            })
+            .count();
+        let steps = self
+            .punch_cards
+            .iter()
+            .flat_map(|c| &c.steps)
+            .filter(|s| !s.complete && !s.locked && s.url.is_some())
+            .count();
+        activities + steps
+    }
+
+    /// Une série au moins n'a pas son étape du jour.
+    pub fn streak_pending(&self) -> bool {
+        self.streaks.streaks.iter().any(|s| !s.today_done)
     }
 
     pub fn daily_set_left(&self) -> usize {
@@ -287,6 +363,14 @@ pub async fn fetch<R: Runtime>(
         }
     };
     let mut summary = match parse(&earn, dashboard.as_deref()) {
+        Ok(summary) if !summary.warnings.is_empty() => {
+            log::warn!(
+                "Lecture incomplète de /earn : {}",
+                summary.warnings.join(", ")
+            );
+            save_diagnostic_now(app, "earn", &earn);
+            summary
+        }
         Ok(summary) => summary,
         Err(err) => {
             // Page inattendue : on la garde pour comprendre ce qui a changé côté Microsoft.
@@ -308,25 +392,39 @@ pub async fn fetch<R: Runtime>(
             let cookie = cookie.clone();
             let url = card.url.clone();
             QuestSource::Fetch(tauri::async_runtime::spawn(async move {
-                match url {
-                    Some(url) => get(&client, &cookie, &url)
-                        .await
-                        .map(|(html, _)| quest_page(&html)),
-                    None => Err(FetchError::Unexpected("quête sans adresse".into())),
+                let Some(url) = url else {
+                    return Err(FetchError::Unexpected("quête sans adresse".into()));
+                };
+                // Un échec passager (réseau, erreur 5xx) vaut un second essai.
+                match get(&client, &cookie, &url).await {
+                    Err(err) if err.is_transient() => {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        get(&client, &cookie, &url).await
+                    }
+                    other => other,
                 }
+                .map(|(html, _)| quest_page(&html))
             }))
         })
         .collect();
     for (card, source) in summary.punch_cards.iter_mut().zip(pages) {
         let page = match source {
             QuestSource::Cached(page) => Ok(Ok(page)),
-            QuestSource::Fetch(task) => {
-                let page = task.await;
-                if let Ok(Ok(page)) = &page {
+            QuestSource::Fetch(task) => match task.await {
+                Ok(Ok(page)) => {
                     remember_quest(card, page.clone());
+                    Ok(Ok(page))
                 }
-                page
-            }
+                // Lecture impossible : les étapes de la dernière lecture réussie valent mieux
+                // qu'une liste vide.
+                failed => match last_quest_page(card) {
+                    Some(page) => {
+                        log::warn!("Quête {} illisible, dernière lecture reprise", card.id);
+                        Ok(Ok(page))
+                    }
+                    None => failed,
+                },
+            },
         };
         match page {
             Ok(Ok(page)) => {
@@ -369,10 +467,10 @@ async fn get(
         .await
         .map_err(|e| FetchError::Network(e.to_string()))?;
     if !response.status().is_success() {
-        return Err(FetchError::Unexpected(format!(
-            "{url} : statut HTTP {}",
-            response.status()
-        )));
+        return Err(FetchError::Http(
+            response.status().as_u16(),
+            url.to_string(),
+        ));
     }
     let final_url = response.url().clone();
     let html = response
@@ -411,6 +509,12 @@ fn cached_quest(card: &PunchCard) -> Option<QuestPage> {
     let cached = cache.as_ref()?.get(&card.id)?;
     (cached.fetched.elapsed() < QUEST_MAX_AGE && cached.progress == (card.done, card.total))
         .then(|| cached.page.clone())
+}
+
+/// Dernière lecture réussie d'une quête, quel que soit son âge.
+fn last_quest_page(card: &PunchCard) -> Option<QuestPage> {
+    let cache = QUEST_CACHE.lock().unwrap();
+    cache.as_ref()?.get(&card.id).map(|c| c.page.clone())
 }
 
 fn remember_quest(card: &PunchCard, page: QuestPage) {
@@ -514,9 +618,47 @@ fn parse(earn_html: &str, dashboard_html: Option<&str>) -> Result<RewardsSummary
             cards
         },
         streaks: streaks::parse(&earn),
+        warnings: Vec::new(),
     };
+    summary.warnings = consistency_warnings(&summary, &earn);
     summary.classify_tasks();
     Ok(summary)
+}
+
+/// Contrôles de cohérence : une donnée présente dans la page mais introuvable après lecture
+/// indique que le format du site a changé.
+fn consistency_warnings(summary: &RewardsSummary, earn: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+    // Une liste vide dans la page est normale ; une liste remplie qu'on ne retrouve pas, non.
+    let mut check = |marker: &str, empty: bool, what: &str| {
+        if empty && earn.contains(marker) {
+            warnings.push(what.to_string());
+        }
+    };
+    check(
+        "\"activityCards\":[{",
+        summary.more.is_empty(),
+        "la liste « Continuer à gagner »",
+    );
+    check(
+        "\"dailySetItems\":[{",
+        summary.daily_set.is_empty(),
+        "les activités du jour",
+    );
+    check(
+        "\"pointsCounters\":{\"",
+        summary.searches.is_empty(),
+        "les compteurs de recherche",
+    );
+    check(
+        "\"type\":\"streak\"",
+        summary.streaks.streaks.is_empty(),
+        "les séries",
+    );
+    if summary.punch_cards.is_empty() && earn.contains(QUEST_PATH) {
+        warnings.push("les quêtes".to_string());
+    }
+    warnings
 }
 
 /// Nom du compte : composant d'en-tête `{"name":"…","profilePictureUrl":"…"}`.
@@ -1172,6 +1314,16 @@ fn task_kind(url: Option<&str>, texts: &[&str]) -> Option<TaskKind> {
         })
     };
     match (&url, host.as_str()) {
+        (Some(url), "rewards.bing.com") => {
+            let path = url.path();
+            if path.starts_with("/redeem") {
+                Some(TaskKind::Redeem)
+            } else if path.starts_with("/refer") {
+                Some(TaskKind::Referral)
+            } else {
+                None
+            }
+        }
         (Some(url), "bing.com" | "www.bing.com") => {
             let path = url.path().trim_end_matches('/');
             if path == "/search" {
@@ -1320,6 +1472,8 @@ c:{{"UnlockCriteria":{{"newLevel2":"Niveau Argent requis","tomorrow":"Déverroui
         );
         let s = parse(&page(&earn_rows()), Some(&dashboard)).unwrap();
         assert_eq!(s.available_points, 3345);
+        // La page de test, au format actuel du site, se lit sans anomalie.
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
         assert_eq!(s.account_name.as_deref(), Some("Pierre Comble"));
         assert_eq!(s.level.as_deref(), Some("Membre"));
         assert_eq!(
@@ -1609,5 +1763,43 @@ c:{{"UnlockCriteria":{{"newLevel2":"Niveau Argent requis","tomorrow":"Déverroui
         card.total = 0;
         remember_quest(&card, QuestPage::default());
         assert!(cached_quest(&card).is_none());
+    }
+
+    #[test]
+    fn signale_une_page_dont_le_format_a_change() {
+        // Le solde se lit, mais la liste des activités a changé de forme.
+        let html = page(r#"0:{"balance":1234,"activityCards":[{"nouveauFormat":true}]}"#);
+        let summary = parse(&html, None).unwrap();
+        assert_eq!(summary.warnings, vec!["la liste « Continuer à gagner »"]);
+        // Une liste vide est normale.
+        let html = page(r#"0:{"balance":1234,"activityCards":[]}"#);
+        assert!(parse(&html, None).unwrap().warnings.is_empty());
+    }
+
+    #[test]
+    fn classe_les_pages_rewards_et_la_quete_de_l_application() {
+        assert_eq!(
+            task_kind(
+                Some("https://rewards.bing.com/redeem/sku/000403000123"),
+                &[]
+            ),
+            Some(TaskKind::Redeem)
+        );
+        assert_eq!(
+            task_kind(
+                Some("https://rewards.bing.com/referandearn?form=ML2X5V"),
+                &[]
+            ),
+            Some(TaskKind::Referral)
+        );
+    }
+
+    #[test]
+    fn messages_d_erreur_comprehensibles() {
+        assert!(FetchError::Http(503, "u".into())
+            .to_string()
+            .contains("erreur 503"));
+        assert!(FetchError::Http(503, "u".into()).is_transient());
+        assert!(!FetchError::Http(404, "u".into()).is_transient());
     }
 }
