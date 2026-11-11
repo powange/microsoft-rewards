@@ -2,6 +2,8 @@
 
 Application Windows (Rust + Tauri 2) qui suit vos points Microsoft Rewards et vous rappelle chaque jour ce qu'il reste à faire, y compris les quêtes Xbox Game Pass. Elle tourne en arrière-plan dans la zone de notification et se met à jour toute seule.
 
+**[Télécharger pour Windows](https://github.com/powange/microsoft-rewards/releases/latest/download/RewardsAutoplay_Setup.exe)** · [Page de présentation](https://powange.github.io/microsoft-rewards/)
+
 ## Fonctionnalités
 
 - Connexion au compte Microsoft sur la page officielle de Microsoft Rewards, dans une fenêtre dédiée. L'application ne voit jamais le mot de passe.

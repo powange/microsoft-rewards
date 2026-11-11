@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rewards Autoplay</title>
+<meta name="description" content="Application Windows gratuite qui suit vos points Microsoft Rewards depuis la zone de notification : tâches du jour, recherches Bing, séries, quêtes, historique et rappels.">
+<meta property="og:title" content="Rewards Autoplay">
+<meta property="og:description" content="Vos points Microsoft Rewards, sans rien oublier. Application Windows gratuite et open source.">
+<meta property="og:image" content="https://powange.github.io/microsoft-rewards/assets/today.png">
+<link rel="icon" type="image/png" href="assets/icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Source+Sans+3:wght@400;600;700&display=swap">
+<style>
+/* Page de présentation : un héros avec le téléchargement, puis ce que fait l'application, l'installation et les principes. */
+:root {
+  --bg: #f4f7f5;
+  --surface: #ffffff;
+  --fg: #142019;
+  --muted: #55665c;
+  --line: #d9e3dd;
+  --accent: #1d7448;
+  --accent-strong: #145a37;
+  --accent-fg: #ffffff;
+  --accent-soft: #dcefe3;
+  --shadow: 0 24px 60px -24px rgba(20, 48, 33, .35);
+  --font-display: "Bricolage Grotesque", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  --font-body: "Source Sans 3", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1310; --surface: #141c18; --fg: #e3ebe6; --muted: #98a99f; --line: #26322c;
+    --accent: #4cc28a; --accent-strong: #6fd6a3; --accent-fg: #0b130f; --accent-soft: #163024;
+    --shadow: 0 24px 60px -24px rgba(0, 0, 0, .7);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.6 var(--font-body); -webkit-font-smoothing: antialiased; }
+img { max-width: 100%; height: auto; display: block; }
+a { color: var(--accent); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
+h1, h2, h3 { font-family: var(--font-display); line-height: 1.1; margin: 0; text-wrap: balance; }
+p { margin: 0; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-left: max(20px, env(safe-area-inset-left, 0px)); padding-right: max(20px, env(safe-area-inset-right, 0px)); }
+
+/* En-tête */
+.top { padding-block: 20px; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.brand { display: flex; align-items: center; gap: 10px; font: 700 18px var(--font-display); color: var(--fg); text-decoration: none; }
+.brand img { width: 32px; height: 32px; }
+.top nav { display: flex; gap: 20px; font-size: 15px; }
+.top nav a { color: var(--muted); text-decoration: none; }
+.top nav a:hover { color: var(--fg); }
+@media (max-width: 640px) { .top nav a:not(:last-child) { display: none; } }
+
+/* Héros */
+.hero { padding-block: 40px 24px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px; text-align: center; justify-items: center; }
+.eyebrow { font-size: 13px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+.hero h1 { font-size: clamp(40px, 7vw, 76px); font-weight: 800; letter-spacing: -.02em; max-width: 14ch; }
+.hero h1 em { font-style: normal; color: var(--accent); }
+.lede { font-size: clamp(18px, 2.2vw, 21px); color: var(--muted); max-width: 60ch; }
+.cta { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+.btn { display: inline-flex; align-items: center; gap: 10px; padding: 14px 22px; border-radius: 12px; font: 700 17px var(--font-body); text-decoration: none; border: 1px solid var(--line); color: var(--fg); background: var(--surface); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); box-shadow: 0 10px 24px -12px var(--accent); }
+.btn.primary:hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+.btn svg { width: 20px; height: 20px; flex: none; }
+.release { font-size: 14px; color: var(--muted); }
+.release b { color: var(--fg); font-weight: 600; }
+.shot { width: 100%; max-width: 1040px; border-radius: 16px; border: 1px solid var(--line); box-shadow: var(--shadow); background: var(--surface); margin-top: 12px; }
+
+/* Sections */
+section { padding-block: 72px; }
+.section-head { display: flex; flex-direction: column; gap: 10px; max-width: 64ch; margin-bottom: 36px; }
+.section-head h2 { font-size: clamp(28px, 4vw, 40px); font-weight: 700; letter-spacing: -.01em; }
+.section-head p { color: var(--muted); }
+
+.features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 900px) { .features { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .features { grid-template-columns: minmax(0, 1fr); } }
+.feature { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; display: flex; flex-direction: column; gap: 8px; }
+.feature .icon { width: 40px; height: 40px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; }
+.feature .icon svg { width: 22px; height: 22px; }
+.feature h3 { font-size: 19px; font-weight: 700; margin-top: 6px; }
+.feature p { color: var(--muted); font-size: 16px; }
+
+.gallery { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+@media (max-width: 800px) { .gallery { grid-template-columns: minmax(0, 1fr); } }
+.gallery figure { margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.gallery img { border-radius: 14px; border: 1px solid var(--line); box-shadow: var(--shadow); background: var(--surface); }
+.gallery figcaption { font-size: 15px; color: var(--muted); }
+.gallery figcaption b { color: var(--fg); }
+.gallery .mini img { max-width: 340px; margin-inline: auto; }
+
+.steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; counter-reset: step; padding: 0; margin: 0; }
+@media (max-width: 800px) { .steps { grid-template-columns: minmax(0, 1fr); } }
+.steps li { list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 22px; display: flex; flex-direction: column; gap: 8px; counter-increment: step; }
+.steps li::before { content: counter(step); font: 800 28px var(--font-display); color: var(--accent); }
+.steps h3 { font-size: 19px; }
+.steps p { color: var(--muted); font-size: 16px; }
+.steps kbd { font: 600 14px var(--font-body); background: var(--accent-soft); color: var(--fg); border-radius: 6px; padding: 1px 6px; }
+
+.principles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 40px; }
+@media (max-width: 700px) { .principles { grid-template-columns: minmax(0, 1fr); } }
+.principles div { border-top: 2px solid var(--accent); padding-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.principles h3 { font-size: 19px; }
+.principles p { color: var(--muted); font-size: 16px; }
+
+.final { text-align: center; display: flex; flex-direction: column; align-items: center; gap: 20px; padding-block: 80px; }
+.final h2 { font-size: clamp(30px, 5vw, 48px); font-weight: 800; letter-spacing: -.01em; }
+
+footer { border-top: 1px solid var(--line); padding-block: 28px calc(28px + env(safe-area-inset-bottom, 0px)); font-size: 14px; color: var(--muted); }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+</style>
+</head>
+<body>
+  <header class="wrap top">
+    <a class="brand" href="#"><img src="assets/icon.png" alt="" width="32" height="32">Rewards Autoplay</a>
+    <nav aria-label="Navigation">
+      <a href="#fonctions">Fonctions</a>
+      <a href="#installation">Installation</a>
+      <a href="https://github.com/powange/microsoft-rewards">GitHub</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="wrap hero">
+      <span class="eyebrow">Application Windows gratuite et open source</span>
+      <h1>Vos points Microsoft Rewards, <em>sans rien oublier.</em></h1>
+      <p class="lede">Rewards Autoplay reste discrètement dans la zone de notification. Il vous montre ce qu'il reste à faire aujourd'hui : activités, recherches Bing, séries et quêtes. Il vous ouvre chaque tâche au bon endroit, et vous rappelle ce qui risque d'être perdu.</p>
+      <div class="cta">
+        <a class="btn primary" id="download" href="https://github.com/powange/microsoft-rewards/releases/latest/download/RewardsAutoplay_Setup.exe">
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+          Télécharger pour Windows
+        </a>
+        <a class="btn" href="https://github.com/powange/microsoft-rewards">Code source sur GitHub</a>
+      </div>
+      <p class="release" id="release">Windows 10 et 11 · installateur de la dernière version</p>
+      <img class="shot" src="assets/today.png" width="2400" height="1720" alt="La page Aujourd'hui de Rewards Autoplay : solde de points, objectif d'échange, recherches Bing, activités du jour et recherches à faire.">
+    </div>
+
+    <section id="fonctions">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="eyebrow">Ce qu'il fait</span>
+          <h2>Tout ce qui rapporte des points, au même endroit</h2>
+          <p>L'application lit votre tableau de bord Microsoft Rewards et le présente sous forme de liste de tâches. Rien n'est fait à votre place : vous gardez la main, elle vous fait gagner du temps.</p>
+        </div>
+        <div class="features">
+          <article class="feature">
+            <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/></svg></span>
+            <h3>La journée en un coup d'œil</h3>
+            <p>Solde, niveau, points à réclamer, activités du jour, cartes « Explorer sur Bing » et « Continuer à gagner », exactement comme sur le site.</p>
+          </article>
+          <article class="feature">
+            <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg></span>
+            <h3>Les recherches Bing repérées</h3>
+            <p>Chaque tâche porte un badge : recherche, quiz, puzzle, site partenaire. Pour une consigne « Recherchez sur Bing… », le champ de recherche est prérempli : il ne reste qu'à valider.</p>
+          </article>
+          <article class="feature">
+            <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg></span>
+            <h3>« Faire mes tâches »</h3>
+            <p>Une session guidée ouvre vos tâches une par une dans une fenêtre déjà connectée à votre compte, avec un bouton « Tâche suivante ». Les points sont bien validés.</p>
+          </article>
+          <article class="feature">
+            <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></span>
+            <h3>Rappels qui évitent les pertes</h3>
+            <p>Un rappel par jour à l'heure choisie, les séries dont l'étape du jour n'est pas faite, les tâches qui se déverrouillent, les quêtes qui expirent dans moins de 48 heures.</p>
+          </article>
+          <article class="feature">
+            <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg></span>
+            <h3>Historique et objectif</h3>
+            <p>Les points gagnés chaque jour et en moyenne, et un objectif d'échange : les points qui manquent pour l'article visé et la date estimée à votre rythme.</p>
+          </article>
+          <article class="feature">
+            <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M8 14h4"/></svg></span>
+            <h3>Quêtes et jeux</h3>
+            <p>Le détail de chaque quête, étape par étape, une étoile pour suivre celles qui vous intéressent, et une recherche par jeu dans les quêtes et le catalogue d'échange.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="wrap">
+        <div class="section-head">
+          <span class="eyebrow">Aperçu</span>
+          <h2>Discret dans la zone de notification</h2>
+          <p>Fermer la fenêtre ne quitte pas l'application. Un clic sur l'icône affiche la journée ; les données se mettent à jour toutes seules, et l'application aussi.</p>
+        </div>
+        <div class="gallery">
+          <figure>
+            <img src="assets/history.png" width="2400" height="1280" alt="L'onglet Historique : points gagnés aujourd'hui, sur 7 jours, moyenne sur 30 jours, points échangés et graphique des 30 derniers jours." loading="lazy">
+            <figcaption><b>Historique.</b> Le solde est relevé chaque jour : gains, moyenne et échanges sur 30 jours.</figcaption>
+          </figure>
+          <figure class="mini">
+            <img src="assets/mini.png" width="680" height="1040" alt="La mini-fenêtre de la zone de notification : solde, tâches du jour, séries et objectif." loading="lazy">
+            <figcaption><b>Mini-fenêtre.</b> Un clic sur l'icône, près de l'horloge : ce qu'il reste à faire, sans ouvrir l'application.</figcaption>
+          </figure>
+        </div>
+        <p class="release" style="margin-top:20px">Captures réalisées avec des données d'exemple.</p>
+      </div>
+    </section>
+
+    <section id="installation">
+      <div class="wrap">
+        <div class="section-head">
+          <span class="eyebrow">Installation</span>
+          <h2>Prêt en une minute</h2>
+        </div>
+        <ol class="steps">
+          <li>
+            <h3>Téléchargez l'installateur</h3>
+            <p><a href="https://github.com/powange/microsoft-rewards/releases/latest/download/RewardsAutoplay_Setup.exe">RewardsAutoplay_Setup.exe</a>, puis lancez-le. Il s'installe pour votre seul compte Windows, sans droits administrateur.</p>
+          </li>
+          <li>
+            <h3>Passez l'avertissement Windows</h3>
+            <p>L'installateur n'est pas encore signé : SmartScreen peut afficher un avertissement. Cliquez sur <kbd>Informations complémentaires</kbd> puis <kbd>Exécuter quand même</kbd>.</p>
+          </li>
+          <li>
+            <h3>Connectez votre compte</h3>
+            <p>La connexion se fait sur la page officielle de Microsoft Rewards. Ensuite, l'application se met à jour d'elle-même à chaque nouvelle version.</p>
+          </li>
+        </ol>
+      </div>
+    </section>
+
+    <section>
+      <div class="wrap">
+        <div class="section-head">
+          <span class="eyebrow">Principes</span>
+          <h2>Pensé pour votre compte, pas contre lui</h2>
+        </div>
+        <div class="principles">
+          <div>
+            <h3>Votre mot de passe reste chez Microsoft</h3>
+            <p>Vous vous connectez sur la page officielle, dans une fenêtre dédiée. L'application ne voit jamais votre mot de passe : elle garde seulement la session ouverte pour lire vos points.</p>
+          </div>
+          <div>
+            <h3>Rien n'est fait sans vous</h3>
+            <p>Les conditions de Microsoft Rewards interdisent les robots et les recherches automatiques. L'application ouvre les tâches quand vous le demandez et prépare les recherches, mais c'est vous qui les lancez.</p>
+          </div>
+          <div>
+            <h3>Vos données restent sur votre PC</h3>
+            <p>Réglages, historique et quêtes suivies sont enregistrés localement. Aucun serveur intermédiaire, aucune statistique d'utilisation envoyée.</p>
+          </div>
+          <div>
+            <h3>Des mises à jour vérifiées</h3>
+            <p>Chaque mise à jour est signée avec la clé du projet et vérifiée avant installation. Le code est public : vous pouvez le lire et le compiler vous-même.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="wrap final">
+      <h2>Ne laissez plus filer une série.</h2>
+      <a class="btn primary" href="https://github.com/powange/microsoft-rewards/releases/latest/download/RewardsAutoplay_Setup.exe">
+        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+        Télécharger pour Windows
+      </a>
+      <p class="release" id="release-bottom">Gratuit · Windows 10 et 11</p>
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>Rewards Autoplay · projet open source sur <a href="https://github.com/powange/microsoft-rewards">GitHub</a></span>
+      <span>Projet indépendant, non affilié à Microsoft. Microsoft Rewards, Bing et Xbox sont des marques de Microsoft.</span>
+    </div>
+  </footer>
+
+<script>
+// Version, date et taille de la dernière release, lues sur l'API GitHub. Sans réponse, le texte par défaut reste.
+(async () => {
+  try {
+    const res = await fetch("https://api.github.com/repos/powange/microsoft-rewards/releases/latest", { headers: { Accept: "application/vnd.github+json" } });
+    if (!res.ok) return;
+    const release = await res.json();
+    const asset = (release.assets || []).find((a) => a.name === "RewardsAutoplay_Setup.exe");
+    const date = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long", year: "numeric" }).format(new Date(release.published_at));
+    const size = asset ? ` · ${(asset.size / 1048576).toFixed(1).replace(".", ",")} Mo` : "";
+    const version = release.tag_name.replace(/^v/, "");
+    document.getElementById("release").innerHTML = "";
+    document.getElementById("release").append("Version ", Object.assign(document.createElement("b"), { textContent: version }), ` du ${date}${size} · Windows 10 et 11`);
+    document.getElementById("release-bottom").textContent = `Gratuit · version ${version} · Windows 10 et 11`;
+  } catch (e) {
+    // Hors ligne ou limite de l'API atteinte : le lien de téléchargement fonctionne quand même.
+  }
+})();
+</script>
+</body>
+</html>
