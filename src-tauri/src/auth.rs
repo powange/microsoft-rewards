@@ -336,16 +336,18 @@ const CLICK_MARKER: &str = "__rewards-autoplay-clicked__";
 /// Après le clic, délai laissé au site pour ouvrir sa fenêtre avant que l'application ouvre
 /// elle-même le lien de la tâche.
 const POPUP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
-/// Lien de la dernière tâche cliquée automatiquement.
-static LAST_CLICK_TARGET: Mutex<Option<String>> = Mutex::new(None);
-/// Dernière fenêtre ouverte à la demande du site.
-static LAST_POPUP: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+/// Lien de la dernière tâche cliquée automatiquement, et nombre de fenêtres ouvertes par le
+/// site au moment où le clic a été préparé.
+static LAST_CLICK_TARGET: Mutex<Option<(String, usize)>> = Mutex::new(None);
+/// Nombre de fenêtres ouvertes à la demande du site. On compare des compteurs plutôt que des
+/// heures : le signal du clic peut arriver après la fenêtre qu'il a provoquée.
+static POPUPS: AtomicUsize = AtomicUsize::new(0);
 
 /// Le clic automatique a eu lieu : si le site n'ouvre pas de fenêtre (WebView2 peut bloquer
 /// une fenêtre demandée après un clic simulé), l'application ouvre le lien de la tâche. Le
 /// clic a déjà été enregistré par le site pour les points.
 fn after_auto_click<R: Runtime>(app: &AppHandle<R>) {
-    let Some(target) = LAST_CLICK_TARGET.lock().unwrap().take() else {
+    let Some((target, popups_before)) = LAST_CLICK_TARGET.lock().unwrap().take() else {
         return;
     };
     let Ok(url) = Url::parse(&target) else {
@@ -355,14 +357,10 @@ fn after_auto_click<R: Runtime>(app: &AppHandle<R>) {
     if url.host_str() == Some("rewards.bing.com") {
         return;
     }
-    let clicked_at = std::time::Instant::now();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(POPUP_GRACE).await;
-        let opened = LAST_POPUP
-            .lock()
-            .unwrap()
-            .is_some_and(|at| at >= clicked_at);
+        let opened = POPUPS.load(Ordering::SeqCst) > popups_before;
         if opened || launch_edge_link(&app, &url) || url.scheme() != "https" {
             return;
         }
@@ -522,7 +520,7 @@ pub fn open_site<R: Runtime>(
                     return NewWindowResponse::Deny;
                 }
                 let _ = handle.emit("rewards-site-navigated", url.as_str());
-                *LAST_POPUP.lock().unwrap() = Some(std::time::Instant::now());
+                POPUPS.fetch_add(1, Ordering::SeqCst);
                 match open_search_window(&handle, SearchSource::Popup(features)) {
                     Ok(window) => NewWindowResponse::Create { window },
                     Err(err) => {
@@ -539,7 +537,8 @@ pub fn open_site<R: Runtime>(
             let _ = handle.emit("rewards-site-navigated", payload.url().as_str());
             if payload.url().host_str() == Some("rewards.bing.com") {
                 if let Some((target, title)) = PENDING_CLICK.lock().unwrap().take() {
-                    *LAST_CLICK_TARGET.lock().unwrap() = Some(target.clone());
+                    *LAST_CLICK_TARGET.lock().unwrap() =
+                        Some((target.clone(), POPUPS.load(Ordering::SeqCst)));
                     let target = serde_json::to_string(&target).unwrap_or_default();
                     let title = serde_json::to_string(&title).unwrap_or_default();
                     let script = CLICK_SCRIPT
