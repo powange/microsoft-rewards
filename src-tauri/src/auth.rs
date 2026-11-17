@@ -147,7 +147,14 @@ const CLICK_SCRIPT: &str = r#"(() => {
     if (found && found.ready) {
       found.el.scrollIntoView({ block: "center" });
       found.el.style.outline = "3px solid #4cc28a";
-      setTimeout(() => found.el.click(), 700);
+      setTimeout(() => {
+        found.el.click();
+        // Signal à l'application (la page n'a pas d'autre moyen de la joindre) : le titre de
+        // la page change un instant. Elle vérifie ensuite que le site a bien ouvert sa fenêtre.
+        const title = document.title;
+        document.title = "__rewards-autoplay-clicked__";
+        setTimeout(() => { document.title = title; }, 100);
+      }, 700);
       return;
     }
     if (Date.now() - started < 20000) setTimeout(tick, 300);
@@ -317,9 +324,59 @@ fn launch_edge_link<R: Runtime>(app: &AppHandle<R>, url: &Url) -> bool {
 /// Fenêtre de recherche demandée par le site (recherche Bing, quiz…). L'application la crée
 /// elle-même, dans la même session WebView2, pour pouvoir y remplir le champ de recherche.
 /// Une seule à la fois : la précédente est fermée, pour ne pas les accumuler.
+/// Origine d'une fenêtre de recherche : demandée par le site (`window.open`), ou ouverte par
+/// l'application sur le lien d'une tâche quand le site ne l'a pas fait.
+enum SearchSource {
+    Popup(tauri::webview::NewWindowFeatures),
+    Direct(Url),
+}
+
+/// Titre que prend un instant la page Rewards juste après le clic automatique.
+const CLICK_MARKER: &str = "__rewards-autoplay-clicked__";
+/// Après le clic, délai laissé au site pour ouvrir sa fenêtre avant que l'application ouvre
+/// elle-même le lien de la tâche.
+const POPUP_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Lien de la dernière tâche cliquée automatiquement.
+static LAST_CLICK_TARGET: Mutex<Option<String>> = Mutex::new(None);
+/// Dernière fenêtre ouverte à la demande du site.
+static LAST_POPUP: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+
+/// Le clic automatique a eu lieu : si le site n'ouvre pas de fenêtre (WebView2 peut bloquer
+/// une fenêtre demandée après un clic simulé), l'application ouvre le lien de la tâche. Le
+/// clic a déjà été enregistré par le site pour les points.
+fn after_auto_click<R: Runtime>(app: &AppHandle<R>) {
+    let Some(target) = LAST_CLICK_TARGET.lock().unwrap().take() else {
+        return;
+    };
+    let Ok(url) = Url::parse(&target) else {
+        return;
+    };
+    // Lien vers une autre page Rewards : il s'ouvre dans la même fenêtre, rien à faire.
+    if url.host_str() == Some("rewards.bing.com") {
+        return;
+    }
+    let clicked_at = std::time::Instant::now();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(POPUP_GRACE).await;
+        let opened = LAST_POPUP
+            .lock()
+            .unwrap()
+            .is_some_and(|at| at >= clicked_at);
+        if opened || launch_edge_link(&app, &url) || url.scheme() != "https" {
+            return;
+        }
+        log::info!("Le site n'a pas ouvert la tâche : ouverture directe de {url}");
+        let _ = app.emit("rewards-site-navigated", url.as_str());
+        if let Err(err) = open_search_window(&app, SearchSource::Direct(url)) {
+            log::warn!("Fenêtre de recherche impossible à créer : {err}");
+        }
+    });
+}
+
 fn open_search_window<R: Runtime>(
     app: &AppHandle<R>,
-    features: tauri::webview::NewWindowFeatures,
+    source: SearchSource,
 ) -> tauri::Result<tauri::WebviewWindow<R>> {
     for (label, window) in app.webview_windows() {
         if label.starts_with(SEARCH_LABEL) {
@@ -331,37 +388,41 @@ fn open_search_window<R: Runtime>(
         SEARCH_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
     let handle = app.clone();
-    WebviewWindowBuilder::new(
-        app,
-        label,
-        WebviewUrl::External(Url::parse("about:blank").unwrap()),
-    )
-    .title("Recherche Bing")
-    .inner_size(1100.0, 820.0)
-    .window_features(features)
-    .on_document_title_changed(|window, title| {
-        let _ = window.set_title(&title);
-    })
-    .on_new_window({
-        let handle = app.clone();
-        move |url, _| {
-            if url.scheme() == "https" {
-                NewWindowResponse::Allow
-            } else {
-                launch_edge_link(&handle, &url);
-                NewWindowResponse::Deny
+    let start = match &source {
+        SearchSource::Popup(_) => Url::parse("about:blank").unwrap(),
+        SearchSource::Direct(url) => url.clone(),
+    };
+    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(start))
+        .title("Recherche Bing")
+        .inner_size(1100.0, 820.0);
+    builder = match source {
+        SearchSource::Popup(features) => builder.window_features(features),
+        SearchSource::Direct(_) => builder.center(),
+    };
+    builder
+        .on_document_title_changed(|window, title| {
+            let _ = window.set_title(&title);
+        })
+        .on_new_window({
+            let handle = app.clone();
+            move |url, _| {
+                if url.scheme() == "https" {
+                    NewWindowResponse::Allow
+                } else {
+                    launch_edge_link(&handle, &url);
+                    NewWindowResponse::Deny
+                }
             }
-        }
-    })
-    .on_page_load(move |window, payload| {
-        if payload.event() != PageLoadEvent::Finished {
-            return;
-        }
-        let _ = handle.emit("rewards-site-navigated", payload.url().as_str());
-        fill_pending_query(&window, payload.url());
-        maybe_close_after_search(&handle, payload.url());
-    })
-    .build()
+        })
+        .on_page_load(move |window, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            let _ = handle.emit("rewards-site-navigated", payload.url().as_str());
+            fill_pending_query(&window, payload.url());
+            maybe_close_after_search(&handle, payload.url());
+        })
+        .build()
 }
 
 /// Ouvre une page du site Rewards dans une fenêtre de l'application, connectée au compte.
@@ -397,6 +458,12 @@ pub fn open_site<R: Runtime>(
         .title("Microsoft Rewards")
         .inner_size(1100.0, 820.0)
         .center()
+        // Signal du clic automatique (voir CLICK_SCRIPT).
+        .on_document_title_changed(|window, title| {
+            if title == CLICK_MARKER {
+                after_auto_click(window.app_handle());
+            }
+        })
         // Boutons du bandeau de la session guidée.
         .on_navigation({
             let handle = app.clone();
@@ -429,7 +496,8 @@ pub fn open_site<R: Runtime>(
                     return NewWindowResponse::Deny;
                 }
                 let _ = handle.emit("rewards-site-navigated", url.as_str());
-                match open_search_window(&handle, features) {
+                *LAST_POPUP.lock().unwrap() = Some(std::time::Instant::now());
+                match open_search_window(&handle, SearchSource::Popup(features)) {
                     Ok(window) => NewWindowResponse::Create { window },
                     Err(err) => {
                         log::warn!("Fenêtre de recherche impossible à créer : {err}");
@@ -445,6 +513,7 @@ pub fn open_site<R: Runtime>(
             let _ = handle.emit("rewards-site-navigated", payload.url().as_str());
             if payload.url().host_str() == Some("rewards.bing.com") {
                 if let Some((target, title)) = PENDING_CLICK.lock().unwrap().take() {
+                    *LAST_CLICK_TARGET.lock().unwrap() = Some(target.clone());
                     let target = serde_json::to_string(&target).unwrap_or_default();
                     let title = serde_json::to_string(&title).unwrap_or_default();
                     let script = CLICK_SCRIPT
