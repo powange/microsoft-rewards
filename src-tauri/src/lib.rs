@@ -754,6 +754,10 @@ async fn open_rewards_site(
     if parsed.scheme() != "https" {
         return Err(format!("Adresse non autorisée : {url}"));
     }
+    // Session guidée : chaque tâche s'ouvre dans une fenêtre Rewards neuve, comme la première.
+    if guide.as_ref().is_some_and(|g| g.index > 0) {
+        auth::close_site_for_next_task(&app).await;
+    }
     auth::open_site(&app, parsed, click, click_title, query, guide, false)
         .map_err(|e| e.to_string())
 }

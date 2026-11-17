@@ -425,6 +425,32 @@ fn open_search_window<R: Runtime>(
         .build()
 }
 
+/// Fermeture de la fenêtre Rewards par l'application elle-même (tâche suivante).
+static REOPENING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ferme la fenêtre Rewards et les fenêtres de recherche avant d'ouvrir la tâche suivante
+/// dans une fenêtre neuve : la première tâche d'une session marche toujours, les suivantes
+/// partent donc du même état. Attend que la fenêtre soit détruite (une seconde au plus).
+pub async fn close_site_for_next_task<R: Runtime>(app: &AppHandle<R>) {
+    for (label, window) in app.webview_windows() {
+        if label.starts_with(SEARCH_LABEL) {
+            let _ = window.close();
+        }
+    }
+    let Some(window) = app.get_webview_window(SITE_LABEL) else {
+        return;
+    };
+    REOPENING.store(true, Ordering::SeqCst);
+    let _ = window.destroy();
+    for _ in 0..20 {
+        if app.get_webview_window(SITE_LABEL).is_none() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    REOPENING.store(false, Ordering::SeqCst);
+}
+
 /// Ouvre une page du site Rewards dans une fenêtre de l'application, connectée au compte.
 ///
 /// C'est le site qui valide une activité au moment du clic (le lien de destination seul ne
@@ -536,6 +562,11 @@ pub fn open_site<R: Runtime>(
     let handle = app.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Destroyed = event {
+            // Fenêtre fermée par l'application pour passer à la tâche suivante : la session
+            // guidée continue.
+            if REOPENING.swap(false, Ordering::SeqCst) {
+                return;
+            }
             // Fermer la fenêtre Rewards arrête la session guidée.
             if GUIDE.lock().unwrap().take().is_some() {
                 let _ = handle.emit("guided-end", ());
