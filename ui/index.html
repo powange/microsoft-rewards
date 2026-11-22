@@ -227,6 +227,17 @@
         </article>
 
         <article class="panel">
+          <h2>Mes recherches Bing</h2>
+          <p class="muted small">Écrivez les recherches que vous avez envie de faire, une par ligne. Dans les fenêtres Bing de l'application, un bandeau propose la suivante : un clic la lance, puis il propose la suivante. Rien n'est lancé sans votre clic, conformément aux règles de Microsoft Rewards.</p>
+          <label for="my-searches" class="sr-only">Mes recherches, une par ligne</label>
+          <textarea id="my-searches" rows="8" placeholder="météo Marseille ce week-end&#10;recette de crêpes&#10;résultats Ligue 1&#10;sorties cinéma de la semaine"></textarea>
+          <div class="inline-field">
+            <label class="check"><input type="checkbox" id="my-searches-shuffle"> Ordre mélangé chaque jour</label>
+            <span class="muted small" id="my-searches-count"></span>
+          </div>
+        </article>
+
+        <article class="panel">
           <h2>Actualisation automatique</h2>
           <div class="form">
             <label for="refresh-interval">Actualiser toutes les</label>

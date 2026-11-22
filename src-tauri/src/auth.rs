@@ -306,6 +306,101 @@ fn fill_pending_query<R: Runtime>(window: &tauri::WebviewWindow<R>, url: &Url) {
     }
 }
 
+/// Bandeau « Mes recherches » dans les pages Bing : la prochaine recherche de la liste de
+/// l'utilisateur, lancée seulement quand il clique. Comme pour la session guidée, les boutons
+/// naviguent vers une adresse réservée que l'application intercepte.
+const MY_SEARCH_SCRIPT: &str = r##"(() => {
+  const info = __INFO__;
+  document.getElementById("rewards-autoplay-searches")?.remove();
+  const bar = document.createElement("div");
+  bar.id = "rewards-autoplay-searches";
+  bar.setAttribute("role", "region");
+  bar.setAttribute("aria-label", "Mes recherches");
+  bar.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483647;max-width:min(420px,calc(100% - 32px));"
+    + "display:flex;flex-direction:column;gap:8px;padding:12px 14px;border-radius:12px;background:#1f2a24;color:#fff;"
+    + "font:14px/1.4 system-ui,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.35)";
+  const head = document.createElement("div");
+  head.style.cssText = "display:flex;justify-content:space-between;gap:12px;color:#b8c7bf;font-size:12px";
+  const stats = document.createElement("span");
+  stats.textContent = "Mes recherches · " + info.doneToday + " lancée" + (info.doneToday > 1 ? "s" : "")
+    + " aujourd'hui" + (info.pc ? " · " + info.pc : "");
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "×";
+  close.setAttribute("aria-label", "Masquer");
+  close.style.cssText = "border:0;background:none;color:#fff;font-size:18px;line-height:1;cursor:pointer";
+  close.onclick = () => bar.remove();
+  head.append(stats, close);
+  const go = (action) => () => { location.href = location.origin + "/__rewards-autoplay/" + action; };
+  const search = document.createElement("button");
+  search.type = "button";
+  search.textContent = "Rechercher « " + info.query + " » ▸";
+  search.style.cssText = "border:0;border-radius:8px;padding:8px 12px;cursor:pointer;text-align:left;"
+    + "font:600 14px system-ui,sans-serif;background:#4cc28a;color:#0b130f";
+  search.onclick = go("my-search");
+  const skip = document.createElement("button");
+  skip.type = "button";
+  skip.textContent = "Passer à la suivante";
+  skip.style.cssText = "align-self:flex-start;border:0;background:none;color:#b8c7bf;cursor:pointer;font:13px system-ui,sans-serif;padding:0";
+  skip.onclick = go("skip-search");
+  bar.append(head, search, skip);
+  document.body.append(bar);
+})();"##;
+
+/// Affiche le bandeau « Mes recherches » sur une page Bing si la liste n'est pas vide.
+fn show_my_search_bar<R: Runtime>(window: &tauri::WebviewWindow<R>, url: &Url) {
+    let host = url.host_str().unwrap_or_default();
+    if host != "bing.com" && host != "www.bing.com" {
+        return;
+    }
+    let app = window.app_handle();
+    let state = app.state::<crate::AppState>();
+    let Some(next) = state.store.next_search() else {
+        return;
+    };
+    let pc = state.summary.lock().unwrap().as_ref().and_then(|s| {
+        s.searches
+            .iter()
+            .find(|c| !c.label.to_lowercase().contains("mobile"))
+            .map(|c| format!("PC {} / {} pts", c.progress, c.max))
+    });
+    let info = serde_json::json!({ "query": next.query, "doneToday": next.done_today, "pc": pc });
+    let _ = window.eval(MY_SEARCH_SCRIPT.replace("__INFO__", &info.to_string()));
+}
+
+/// Boutons du bandeau « Mes recherches ». Renvoie `true` si la navigation était l'un d'eux.
+fn handle_my_search_nav<R: Runtime>(app: &AppHandle<R>, label: &str, url: &Url) -> bool {
+    let launched = match url.path() {
+        "/__rewards-autoplay/my-search" => true,
+        "/__rewards-autoplay/skip-search" => false,
+        _ => return false,
+    };
+    let store = &app.state::<crate::AppState>().store;
+    let Some(next) = store.next_search() else {
+        return true;
+    };
+    store.advance_search(launched);
+    let app = app.clone();
+    let label = label.to_string();
+    // Hors du gestionnaire de navigation : y naviguer à nouveau bloquerait WebView2.
+    tauri::async_runtime::spawn(async move {
+        let Some(window) = app.get_webview_window(&label) else {
+            return;
+        };
+        if launched {
+            let mut target = Url::parse("https://www.bing.com/search").unwrap();
+            target
+                .query_pairs_mut()
+                .append_pair("q", &next.query)
+                .append_pair("form", "QBLH");
+            let _ = window.navigate(target);
+        } else if let Ok(current) = window.url() {
+            show_my_search_bar(&window, &current);
+        }
+    });
+    true
+}
+
 /// Lien vers un réglage d'Edge (`microsoft-edge://?ux=searchbar`…) : WebView2 ne sait pas
 /// l'ouvrir, on le confie à Windows, qui le passe à Edge comme depuis le site officiel.
 /// Seul ce protocole est accepté. Renvoie `true` si le lien a été pris en charge.
@@ -390,6 +485,8 @@ fn open_search_window<R: Runtime>(
         SearchSource::Popup(_) => Url::parse("about:blank").unwrap(),
         SearchSource::Direct(url) => url.clone(),
     };
+    let nav_handle = app.clone();
+    let nav_label = label.clone();
     let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(start))
         .title("Recherche Bing")
         .inner_size(1100.0, 820.0);
@@ -398,6 +495,7 @@ fn open_search_window<R: Runtime>(
         SearchSource::Direct(_) => builder.center(),
     };
     builder
+        .on_navigation(move |url| !handle_my_search_nav(&nav_handle, &nav_label, url))
         .on_document_title_changed(|window, title| {
             let _ = window.set_title(&title);
         })
@@ -419,6 +517,7 @@ fn open_search_window<R: Runtime>(
             let _ = handle.emit("rewards-site-navigated", payload.url().as_str());
             fill_pending_query(&window, payload.url());
             maybe_close_after_search(&handle, payload.url());
+            show_my_search_bar(&window, payload.url());
         })
         .build()
 }
@@ -492,7 +591,8 @@ pub fn open_site<R: Runtime>(
         .on_navigation({
             let handle = app.clone();
             move |url| {
-                if launch_edge_link(&handle, url) {
+                if launch_edge_link(&handle, url) || handle_my_search_nav(&handle, SITE_LABEL, url)
+                {
                     return false;
                 }
                 let Some(action) = url.path().strip_prefix(GUIDE_PATH) else {
@@ -556,6 +656,7 @@ pub fn open_site<R: Runtime>(
             // Certains liens s'ouvrent dans la même fenêtre plutôt que dans une nouvelle.
             fill_pending_query(&window, payload.url());
             maybe_close_after_search(window.app_handle(), payload.url());
+            show_my_search_bar(&window, payload.url());
         })
         .build()?;
     let handle = app.clone();

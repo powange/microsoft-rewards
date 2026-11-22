@@ -58,6 +58,10 @@ pub struct Settings {
     pub xbox_mobile: bool,
     /// Anniversaire au format `MM-JJ` (vide : pas de rappel du cadeau Xbox Rewards).
     pub birthday: String,
+    /// Recherches choisies par l'utilisateur, proposées une par une dans les fenêtres Bing.
+    pub my_searches: Vec<String>,
+    /// Ordre mélangé chaque jour plutôt que l'ordre de la liste.
+    pub my_searches_shuffle: bool,
     pub subscription: Subscription,
     pub auto_check_updates: bool,
     /// Délai entre deux recherches de mise à jour, en minutes.
@@ -93,6 +97,8 @@ impl Default for Settings {
             xbox_console: false,
             xbox_mobile: true,
             birthday: String::new(),
+            my_searches: Vec::new(),
+            my_searches_shuffle: false,
             subscription: Subscription::None,
             auto_check_updates: true,
             update_check_interval_minutes: 360,
@@ -129,6 +135,39 @@ impl Settings {
             )),
         }
     }
+}
+
+/// Position dans la liste « Mes recherches » (gardée d'un jour à l'autre) et nombre de
+/// recherches lancées aujourd'hui depuis le bandeau.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct MySearchState {
+    pub position: usize,
+    pub day: Option<NaiveDate>,
+    pub done_today: u32,
+}
+
+/// Prochaine recherche de la liste : texte, nombre lancées aujourd'hui, taille de la liste.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextSearch {
+    pub query: String,
+    pub done_today: u32,
+    pub total: usize,
+}
+
+/// Permutation de `0..len` propre au jour : même ordre toute la journée, un autre demain.
+fn daily_order(len: usize, day: NaiveDate) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..len).collect();
+    let mut seed = day.num_days_from_ce() as u64 ^ 0x9E37_79B9_7F4A_7C15;
+    for i in (1..len).rev() {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let j = (seed >> 33) as usize % (i + 1);
+        order.swap(i, j);
+    }
+    order
 }
 
 /// Ancien format : une journée jouée sur PC, avec le nom du jeu.
@@ -236,6 +275,8 @@ struct Persisted {
     known_searches: Option<BTreeSet<String>>,
     /// Dernière détection réussie de la formule Game Pass.
     subscription_checked: Option<NaiveDate>,
+    /// Avancement dans « Mes recherches ».
+    my_search: MySearchState,
 }
 
 /// Objectif d'échange : un article du catalogue Rewards.
@@ -505,6 +546,52 @@ impl Store {
             previous = Some(*balance);
         }
         gained
+    }
+
+    /// Prochaine recherche de « Mes recherches », ou `None` si la liste est vide.
+    pub fn next_search(&self) -> Option<NextSearch> {
+        let data = self.data.lock().unwrap();
+        let list: Vec<&String> = data
+            .settings
+            .my_searches
+            .iter()
+            .filter(|q| !q.trim().is_empty())
+            .collect();
+        if list.is_empty() {
+            return None;
+        }
+        let today = Local::now().date_naive();
+        let position = data.my_search.position % list.len();
+        let index = if data.settings.my_searches_shuffle {
+            daily_order(list.len(), today)[position]
+        } else {
+            position
+        };
+        let done_today = if data.my_search.day == Some(today) {
+            data.my_search.done_today
+        } else {
+            0
+        };
+        Some(NextSearch {
+            query: list[index].trim().to_string(),
+            done_today,
+            total: list.len(),
+        })
+    }
+
+    /// Passe à la recherche suivante ; `launched` : la recherche a été lancée (sinon passée).
+    pub fn advance_search(&self, launched: bool) {
+        let today = Local::now().date_naive();
+        let mut data = self.data.lock().unwrap();
+        data.my_search.position = data.my_search.position.wrapping_add(1);
+        if data.my_search.day != Some(today) {
+            data.my_search.day = Some(today);
+            data.my_search.done_today = 0;
+        }
+        if launched {
+            data.my_search.done_today += 1;
+        }
+        self.save(&data);
     }
 
     pub fn subscription_checked(&self) -> Option<NaiveDate> {
@@ -878,6 +965,34 @@ mod tests {
         let progress = store.xbox_progress();
         assert!(progress.today.pc);
         assert_eq!(progress.month_games, vec!["Sea of Thieves"]);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn mes_recherches_une_par_une() {
+        let path = std::env::temp_dir().join(format!(
+            "rewards-autoplay-searches-{}.json",
+            std::process::id()
+        ));
+        let store = Store::load(path.clone());
+        assert!(store.next_search().is_none());
+        let mut settings = store.settings();
+        settings.my_searches = vec!["météo".into(), " ".into(), "recette".into()];
+        store.set_settings(settings);
+        let first = store.next_search().unwrap();
+        assert_eq!(
+            (first.query.as_str(), first.done_today, first.total),
+            ("météo", 0, 2)
+        );
+        store.advance_search(true);
+        assert_eq!(store.next_search().unwrap().query, "recette");
+        store.advance_search(false);
+        let again = store.next_search().unwrap();
+        assert_eq!((again.query.as_str(), again.done_today), ("météo", 1));
+        let order = daily_order(10, NaiveDate::from_ymd_opt(2026, 11, 22).unwrap());
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(sorted, (0..10).collect::<Vec<_>>());
         let _ = std::fs::remove_file(path);
     }
 }

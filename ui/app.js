@@ -1257,6 +1257,8 @@ async function saveSettings(control) {
     xboxMobile: $("xbox-mobile").checked,
     // Seuls le mois et le jour sont gardés.
     birthday: $("birthday").value ? $("birthday").value.slice(5) : "",
+    mySearches: mySearchLines(),
+    mySearchesShuffle: $("my-searches-shuffle").checked,
     streakReminderTime: $("streak-reminder-time").value || "22:00",
     subscription: $("subscription").value,
     autoCheckUpdates: $("auto-update").checked,
@@ -1291,6 +1293,9 @@ function renderSettings(settings) {
   $("xbox-console").checked = settings.xboxConsole;
   $("xbox-mobile").checked = settings.xboxMobile;
   $("birthday").value = settings.birthday ? `2000-${settings.birthday}` : "";
+  $("my-searches").value = (settings.mySearches ?? []).join("\n");
+  $("my-searches-shuffle").checked = settings.mySearchesShuffle;
+  renderMySearchesCount();
   $("streak-reminder-time").value = settings.streakReminderTime;
   $("subscription").value = settings.subscription;
   $("auto-update").checked = settings.autoCheckUpdates;
@@ -1299,6 +1304,15 @@ function renderSettings(settings) {
   renderUpdateControls();
   $("refresh-interval").value = settings.refreshIntervalMinutes;
 }
+
+/** Lignes non vides de « Mes recherches ». */
+const mySearchLines = () => $("my-searches").value.split("\n").map((l) => l.trim()).filter(Boolean);
+
+function renderMySearchesCount() {
+  const n = mySearchLines().length;
+  $("my-searches-count").textContent = n ? `${n} recherche${n > 1 ? "s" : ""}` : "";
+}
+$("my-searches").addEventListener("input", renderMySearchesCount);
 
 /** Valeur entière d'un champ, ramenée entre `min` et `max`. */
 function clampMinutesInput(id, min, max) {
@@ -1328,7 +1342,7 @@ function refreshMinutesInput() {
   return minutes;
 }
 
-for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "remind-streaks-evening", "streak-reminder-time", "notify-level", "weekly-summary", "auto-xbox-days", "xbox-pc", "xbox-console", "xbox-mobile", "birthday", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval"]) {
+for (const id of ["reminder-time", "remind-bing", "remind-xbox", "remind-streaks", "notify-unlocks", "notify-expiring", "notify-new-searches", "remind-streaks-evening", "streak-reminder-time", "notify-level", "weekly-summary", "auto-xbox-days", "xbox-pc", "xbox-console", "xbox-mobile", "birthday", "my-searches", "my-searches-shuffle", "subscription", "auto-update", "update-interval", "auto-install", "refresh-interval"]) {
   $(id).addEventListener("change", () => saveSettings($(id)));
 }
 

@@ -20,6 +20,7 @@ Application Windows (Rust + Tauri 2) qui suit vos points Microsoft Rewards et vo
 - Formule Game Pass détectée sur la page « Services et abonnements » du compte Microsoft (chaque semaine, ou à la demande).
 - Suivi Xbox calqué sur le Rewards Hub : quêtes du jour (PC, Jewel, console, Game Pass) avec les points selon la formule, bonus hebdomadaires PC et console, série de l'application mobile, série hebdomadaire Game Pass, packs mensuels de 4 et 8 jeux. Tout se coche ou se corrige à la main, jours passés compris ; l'historique des jeux Xbox Live coche automatiquement ce qu'il détecte. Rappel de l'offre et du cadeau d'anniversaire Xbox Rewards.
 - Sauvegarde et restauration des réglages, quêtes suivies, objectif, historique et suivi Xbox.
+- Mes recherches Bing : une liste personnelle de recherches (Paramètres) ; dans les fenêtres Bing, un bandeau propose la suivante, lancée d'un clic, avec le nombre de recherches du jour. Rien n'est lancé sans clic de l'utilisateur.
 - Quêtes suivies : une étoile sur chaque quête pour la retrouver, avec toutes ses étapes, dans une page dédiée.
 - Actualisation automatique des points, séries et quêtes toutes les N minutes (réglable, 30 par défaut).
 - Récompenses par jeu : recherche d'un jeu (ex. Sea of Thieves) pour voir les quêtes en cours qui le concernent (cartes à poinçonner avec leurs étapes, lien vers la page de la quête) et les articles du catalogue d'échange (prix, points manquants).
