@@ -309,3 +309,4 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 .free-game-text .tag { align-self: flex-start; }
 .free-game-actions { display: flex; gap: 6px; }
 #my-searches { width: 100%; margin: 10px 0 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--fg); font: 14px/1.5 var(--font); resize: vertical; box-sizing: border-box; }
+.side-fetched { margin-bottom: 8px; line-height: 1.35; }

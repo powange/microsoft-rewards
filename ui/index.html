@@ -17,6 +17,7 @@
       <button class="nav-item" data-view="settings">Paramètres</button>
       <div class="side-foot">
         <button class="btn side-refresh" id="side-refresh" type="button">↻ Actualiser</button>
+        <div class="muted small side-fetched" id="fetched-at"></div>
         <div id="account-line" class="muted">Non connecté</div>
         <div id="version-line" class="muted small"></div>
       </div>
@@ -49,9 +50,7 @@
             <button class="claim" id="claim" type="button" hidden></button>
           </div>
           <div class="head-actions">
-            <span class="muted small" id="fetched-at"></span>
-            <button class="btn" id="refresh-btn">Actualiser</button>
-            <button class="btn primary" id="guided-btn" type="button" title="Ouvre vos tâches une par une dans la fenêtre Microsoft Rewards">Faire mes tâches ▸</button>
+            <button class="btn primary" id="guided-btn" hidden type="button" title="Ouvre vos tâches une par une dans la fenêtre Microsoft Rewards">Faire mes tâches ▸</button>
           </div>
         </header>
         <div id="guided-banner" class="banner info" hidden>

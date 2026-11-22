@@ -284,6 +284,8 @@ function renderSummary(summary) {
   $("more-done").textContent = todo.length || !done.length ? "" : "Toutes les activités de cette section sont terminées.";
 
   renderSearchesToDo(summary);
+  // « Faire mes tâches » seulement s'il reste des tâches à ouvrir.
+  $("guided-btn").hidden = guidedTasks(summary).length === 0;
 
   const cards = summary.punchCards;
   $("punch-panel").hidden = cards.length === 0;
@@ -497,7 +499,7 @@ async function refresh({ force = false } = {}) {
   refreshing = true;
   clearTimeout(taskRefreshTimer);
   clearInterval(refreshCountdown);
-  const buttons = [$("refresh-btn"), $("side-refresh")];
+  const buttons = [$("side-refresh")];
   for (const button of buttons) button.disabled = true;
   $("side-refresh").textContent = "Actualisation…";
   try {
@@ -519,7 +521,6 @@ async function refresh({ force = false } = {}) {
   }
 }
 
-$("refresh-btn").addEventListener("click", () => refresh({ force: true }));
 // L'encart « Prêt à réclamer » est en haut du tableau de bord Rewards.
 $("claim").addEventListener("click", () => openTask("https://rewards.bing.com/dashboard"));
 $("side-refresh").addEventListener("click", () => refresh({ force: true }));
