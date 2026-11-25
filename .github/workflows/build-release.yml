@@ -178,7 +178,7 @@ jobs:
         notes="$(git log -1 --pretty=%s | sed -E 's/ *\(v[0-9.]+\)$//')"
         echo "RELEASE_NOTES=$notes" >> "$GITHUB_ENV"
 
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with:
         name: release-windows
         path: dist
